@@ -77,6 +77,8 @@ def csv_rows(path: Path) -> Iterator[list[str]]:
 
 
 def text_cell(ws, value: str):
+    # XML 1.0 파서는 원본 CRLF를 LF+LF로 읽을 수 있어 셀 내 줄바꿈을 LF로 통일한다.
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
     if _ILLEGAL_EXCEL_TEXT.search(value):
         raise ValueError("Excel에서 사용할 수 없는 제어 문자가 있습니다")
     if len(value.encode("utf-16-le")) // 2 > MAX_CELL_UTF16_UNITS:

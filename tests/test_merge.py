@@ -41,7 +41,7 @@ class MergeTests(unittest.TestCase):
         try:
             self.assertEqual(wb.sheetnames, ["11시", "14시", "17시"])
             self.assertEqual([c.value for c in wb["11시"][2]], ["00123", "내용, 쉼표", "10.0.0.1", "00:11:22:33:44:55"])
-            self.assertEqual(wb["14시"]["B2"].value, "첫째 줄\r\n둘째 줄")
+            self.assertEqual(wb["14시"]["B2"].value, "첫째 줄\n둘째 줄")
             self.assertEqual(wb["17시"]["B2"].value, "=SUM(A1:A3)")
             self.assertEqual(wb["17시"]["B2"].data_type, "s")
             self.assertEqual(wb["17시"]["B3"].value, "+3")
