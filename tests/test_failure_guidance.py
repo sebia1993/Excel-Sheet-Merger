@@ -120,6 +120,31 @@ class FailureGuidanceTests(unittest.TestCase):
         self.assertIn('허용', advice.action)
         self.assertNotIn('암호화', advice.reason)
 
+    def test_low_disk_space_has_actionable_guidance_not_unknown_drm(self):
+        import errno
+        from excel_sheet_merger.failure_guidance import diagnose_failure
+        failure = OSError(errno.ENOSPC, 'No space left on device')
+        advice = diagnose_failure(failure)
+        self.assertEqual(advice.code, 'DISK_FULL')
+        self.assertIn('공간', advice.reason)
+        self.assertIn('공간', advice.action)
+        self.assertNotIn('암호화', advice.reason)
+
+    def test_nested_quota_error_uses_disk_guidance_instead_of_source_format(self):
+        import errno
+        from excel_sheet_merger.failure_guidance import diagnose_failure
+        from excel_sheet_merger.merge import SourceFileError
+        try:
+            try:
+                raise OSError(getattr(errno, 'EDQUOT', errno.ENOSPC), 'Disk quota exceeded')
+            except OSError as error:
+                raise SourceFileError('A사업장_20261028_14시.csv', error) from error
+        except SourceFileError as failure:
+            advice = diagnose_failure(failure)
+        self.assertEqual(advice.code, 'DISK_FULL')
+        self.assertEqual(advice.filename, 'A사업장_20261028_14시.csv')
+        self.assertIn('할당량', advice.reason)
+
     def test_unexpected_error_does_not_assert_security_encryption(self):
         from excel_sheet_merger.failure_guidance import diagnose_failure
         advice = diagnose_failure(OSError('unexpected disk crash'), None)

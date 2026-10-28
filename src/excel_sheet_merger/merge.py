@@ -9,6 +9,7 @@ from __future__ import annotations
 import codecs
 from copy import copy
 import csv
+import errno
 import os
 import re
 import shutil
@@ -247,6 +248,31 @@ def _stitch_csv_sheets(base_path: Path, csv_path: Path,
                 shutil.copyfileobj(stream_in, stream_out, length=1024 * 1024)
 
 
+def _check_stitch_capacity(output_dir: Path, base_path: Path, csv_path: Path) -> None:
+    """Fail early only when the result drive is clearly short of space.
+
+    The staged XLSX sizes approximate the final compressed package; an extra
+    10% (at least 1 MiB) covers moderate compression and metadata variation.
+    This is *not* a space reservation or proof of future availability.
+    File servers may not report free space; in that case preserve the old
+    atomic-I/O behavior and let the actual write report any failure.
+    """
+    try:
+        available = shutil.disk_usage(output_dir).free
+    except OSError:
+        return
+    staged_bytes = base_path.stat().st_size + csv_path.stat().st_size
+    estimated_need = staged_bytes + max(staged_bytes // 10, 1024 * 1024)
+    if available < estimated_need:
+        raise OSError(
+            errno.ENOSPC,
+            f"병합 결과 저장 공간 부족: 임시 XLSX 작성에 약 {estimated_need:,}바이트의 "
+            f"여유 공간이 필요하지만 현재 {available:,}바이트만 확인됩니다. "
+            "결과 폴더가 있는 드라이브의 공간을 확보해 주세요.",
+            str(output_dir),
+        )
+
+
 def _verify_source(item) -> None:
     """Fail closed if the selected file changed after analysis or during read."""
     if item.snapshot is None:
@@ -309,6 +335,7 @@ def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
                 csv_part = scratch.path / 'csv.xlsx'
                 wb.save(base)
                 streamed_csv.save(csv_part)
+                _check_stitch_capacity(output_dir, base, csv_part)
                 _stitch_csv_sheets(base, csv_part, replacements, result_path)
             else:
                 wb.save(result_path)

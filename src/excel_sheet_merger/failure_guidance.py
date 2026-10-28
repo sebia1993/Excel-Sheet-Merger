@@ -7,6 +7,7 @@ protected document and a damaged/incorrectly encoded file can produce it.
 from __future__ import annotations
 
 import csv
+import errno
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -52,6 +53,12 @@ def diagnose_failure(error: Exception, group: MergeGroup | None = None) -> Failu
     message = technical.lower()
     any_error = lambda kind: any(isinstance(item, kind) for item in chain)
 
+    disk_limit_errors = {errno.ENOSPC, getattr(errno, 'EDQUOT', errno.ENOSPC)}
+    if any(isinstance(cause, OSError) and cause.errno in disk_limit_errors for cause in chain):
+        return FailureGuidance(filename, 'DISK_FULL', '결과 저장 공간 부족',
+                               '결과 저장 드라이브의 여유 공간이 부족하거나 디스크 할당량을 초과했습니다.',
+                               '병합결과 폴더가 있는 드라이브의 저장 공간 및 회사 공유폴더 할당량을 확인하고, '
+                               '필요시 관리자에게 문의한 뒤 재시도해 주세요.', technical)
     if any_error(FileNotFoundError):
         return FailureGuidance(filename, 'MISSING_INPUT', '원본 파일을 찾을 수 없음',
                                '파일 분석 이후 원본 파일이 이동·삭제되었거나 접근할 수 없습니다.',

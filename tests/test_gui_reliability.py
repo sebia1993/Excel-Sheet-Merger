@@ -75,6 +75,18 @@ class GuiStabilityTests(unittest.TestCase):
         self.assertLess(displayed.index('burst-000'), displayed.index('burst-099'))
         self.assertRegex(displayed, r'\[\d{2}:\d{2}:\d{2}\] burst-000')
 
+    def test_long_burst_keeps_every_visible_log_entry_without_pruning(self):
+        # GUI memory may increase with full-history retention, but existing
+        # browsing semantics must not change in a reliability-only update.
+        for i in range(2000):
+            self.app.events.put(('log', f'stress-log-{i:04d}'))
+        while not self.app.events.empty():
+            self.app._consume_events()
+        displayed = self.app.log.get('1.0', 'end')
+        self.assertEqual(displayed.count('stress-log-'), 2000)
+        self.assertLess(displayed.index('stress-log-0000'),
+                        displayed.index('stress-log-1999'))
+
     def test_batch_keeps_order_across_progress_and_done_events(self):
         self.app.busy = True
         self.app.events.put(('log', 'before-progress'))
