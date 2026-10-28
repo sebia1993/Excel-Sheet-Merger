@@ -369,6 +369,7 @@ class MergeApp(tk.Tk):
             return
         try:
             report = scan_folder(Path(location))
+            resolved_folder = Path(location).resolve()
         except Exception as exc:
             if is_network_io_error(exc):
                 advice = diagnose_failure(exc)
@@ -378,8 +379,10 @@ class MergeApp(tk.Tk):
                 description = str(exc)
             messagebox.showerror("파일 분석 실패", description)
             return
+        # Commit the preview only after both scanning and canonicalization
+        # succeed; a disconnected share must not leave a half-valid report.
         self.report = report
-        self._scanned_folder = Path(location).resolve()
+        self._scanned_folder = resolved_folder
         self._reset_failures()
         self.checked_group_ids.clear()
         self.group_map.clear()
@@ -419,7 +422,25 @@ class MergeApp(tk.Tk):
     def _start_merge(self, selection_only: bool) -> None:
         if self.busy or self.report is None:
             return
-        if self._scanned_folder is None or Path(self.folder.get()).resolve() != self._scanned_folder:
+        if self._scanned_folder is None:
+            self._invalidate_scan()
+            messagebox.showerror("파일 분석 필요", "선택한 폴더가 변경되었습니다. 다시 파일 분석을 실행하세요.")
+            return
+        try:
+            current_folder = Path(self.folder.get()).resolve()
+        except (OSError, RuntimeError) as exc:
+            location = self.folder.get()
+            # A lost SMB share or a reparse-point loop can occur between scan
+            # and start. Invalidate the old preview before showing guidance.
+            self._invalidate_scan()
+            advice = diagnose_failure(exc)
+            messagebox.showerror(
+                "원본 폴더 확인 실패",
+                f"원본 폴더: {location}\n원인: {advice.reason}\n"
+                f"조치: {advice.action}\n폴더 연결을 확인한 뒤 다시 파일 분석을 실행하세요.",
+            )
+            return
+        if current_folder != self._scanned_folder:
             self._invalidate_scan()
             messagebox.showerror("파일 분석 필요", "선택한 폴더가 변경되었습니다. 다시 파일 분석을 실행하세요.")
             return
