@@ -298,11 +298,19 @@ class MergeApp(tk.Tk):
             self._toggle_group(group_id)
         return "break"
 
-    def _write_log(self, msg: str) -> None:
+    def _append_log_lines(self, lines: list[str]) -> None:
+        """Append the same complete log lines using one Tk operation per burst."""
+        if not lines:
+            return
         self.log.configure(state="normal")
-        self.log.insert("end", f"[{datetime.now():%H:%M:%S}] {msg}\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
+        try:
+            self.log.insert("end", "".join(lines))
+            self.log.see("end")
+        finally:
+            self.log.configure(state="disabled")
+
+    def _write_log(self, msg: str) -> None:
+        self._append_log_lines([f"[{datetime.now():%H:%M:%S}] {msg}\n"])
 
     def _pick_folder(self) -> None:
         result = filedialog.askdirectory(title="원본 CSV·Excel 파일이 있는 폴더 선택", mustexist=True)
@@ -395,8 +403,18 @@ class MergeApp(tk.Tk):
         self.progress.configure(maximum=len(groups), value=0)
         self.state_text.set(f"병합 진행 0/{len(groups)}")
         self._write_log(f"병합 시작: {len(groups)}개 그룹 → {output_dir}")
-        thread = threading.Thread(target=self._worker_merge, args=(groups, output_dir), daemon=True)
-        thread.start()
+        try:
+            thread = threading.Thread(target=self._worker_merge, args=(groups, output_dir), daemon=True)
+            thread.start()
+        except (RuntimeError, OSError) as exc:
+            # A worker that never started cannot enqueue a completion event.
+            # Restore an actionable UI rather than leaving it permanently busy.
+            self.busy = False
+            self._set_enabled(bool(self.report and self.report.groups))
+            self.progress.configure(maximum=1, value=0)
+            self.state_text.set("병합 시작 실패 · 다시 시도할 수 있습니다")
+            self._write_log(f"병합 시작 실패: {exc}")
+            messagebox.showerror("병합 시작 실패", f"병합 작업을 시작하지 못했습니다.\n원인: {exc}\n시스템 자원을 확인한 뒤 다시 시도하세요.")
 
     @staticmethod
     def _write_job_record(output_dir: Path, records: list[str]) -> Path:
@@ -482,13 +500,23 @@ class MergeApp(tk.Tk):
                 pass
             self._poll_job = None
         processed = 0
+        pending_lines: list[str] = []
+
+        def flush_log() -> None:
+            if pending_lines:
+                self._append_log_lines(pending_lines)
+                pending_lines.clear()
+
         try:
             while processed < 100:
                 event = self.events.get_nowait()
                 processed += 1
                 if event[0] == "log":
-                    self._write_log(event[1])
-                elif event[0] == "failure":
+                    pending_lines.append(f"[{datetime.now():%H:%M:%S}] {event[1]}\n")
+                    continue
+                # Preserve FIFO presentation around failure/progress/done events.
+                flush_log()
+                if event[0] == "failure":
                     self._register_failure(event[1])
                 elif event[0] == "record_error":
                     self._record_error = event[1]
@@ -518,6 +546,8 @@ class MergeApp(tk.Tk):
                         messagebox.showinfo("병합 종료", self.state_text.get() + notice + "\n결과는 '병합결과' 폴더에 저장했습니다.")
         except queue.Empty:
             pass
+        finally:
+            flush_log()
         if self.winfo_exists():
             # Yield control after a bounded batch; keep FIFO order intact.
             self._poll_job = self.after(1 if not self.events.empty() else 120, self._consume_events)
