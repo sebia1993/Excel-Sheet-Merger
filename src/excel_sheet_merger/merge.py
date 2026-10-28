@@ -139,7 +139,14 @@ def _append_openpyxl(ws, path: Path) -> None:
         # even when a 5KB source has only two populated/style cells 700 rows apart.
         # The source workbook loaded in normal mode already has instantiated cells.
         # Keep the previous rule for empty unstyled cells, styles and merged borders.
-        for cell in source._cells.values():  # pinned openpyxl 3.1.x internal API
+        # Each copied source cell can be released immediately. In normal
+        # openpyxl mode the source workbook is private to this function;
+        # keeping its entire _cells dictionary alive while building the
+        # destination doubles peak live Cell objects for dense worksheets.
+        # popitem() visits each loaded source cell exactly once, without
+        # requiring another list of all source cells in memory.
+        while source._cells:  # pinned openpyxl 3.1.x internal API
+            _coordinate, cell = source._cells.popitem()
             if cell.value is None and not cell.has_style:
                 continue
             if cell.value is not None:
