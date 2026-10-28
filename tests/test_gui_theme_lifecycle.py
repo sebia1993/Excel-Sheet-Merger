@@ -100,3 +100,41 @@ def observe(app):
             finally:
                 app.destroy()
         ''')
+
+    def test_small_failure_layout_preserves_text_and_restores_original_spacing(self):
+        self.run_gui('''
+            from excel_sheet_merger.failure_guidance import diagnose_failure
+            from excel_sheet_merger.merge import SourceFileError
+            from pathlib import Path
+            app = MergeApp()
+            observe(app)
+            try:
+                app.update()
+                root_frame = app.winfo_children()[0]
+                original_padding = tuple(root_frame.cget('padding'))
+                # Real decoding diagnosis, not a fabricated short placeholder.
+                error = UnicodeDecodeError('cp949', b'\\xff', 0, 1, 'invalid start byte')
+                advice = diagnose_failure(SourceFileError(Path('A사업장_20261028_14시.csv'), error))
+                app._register_failure(advice)
+                app._write_log(advice.reason + advice.action)
+                message = app.failure_text.get()
+                log_before = app.log.get('1.0', 'end')
+                app.geometry('900x640')
+                app.update()
+                assert app.tree.winfo_height() >= 70, app.tree.winfo_height()
+                assert advice.reason in app.failure_text.get()
+                assert advice.action in app.failure_text.get()
+                app.geometry('1100x760')
+                app.update()
+                assert tuple(root_frame.cget('padding')) == original_padding
+                assert app.failure_text.get() == message
+                assert app.log.get('1.0', 'end') == log_before
+                app.geometry('900x640')
+                app.update()
+                app._reset_failures()
+                app.update()
+                assert tuple(root_frame.cget('padding')) == original_padding
+                assert not errors, errors
+            finally:
+                app.destroy()
+        ''')
