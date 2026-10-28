@@ -91,7 +91,7 @@ class MergeTests(unittest.TestCase):
         excel = FakeExcel()
         result = merge_group(self.group, self.output, excel)
         self.assertEqual(result.status, MergeStatus.CREATED)
-        self.assertEqual(json.loads(result.path.read_text()), ['11시','14시','17시'])
+        self.assertEqual(json.loads(result.path.read_text(encoding='utf-8')), ['11시','14시','17시'])
         self.assertTrue(all((self.folder / n).read_text(encoding='utf-8') == 'ORIGINAL' for n in self.names))
         self.assertEqual(len(excel.Workbooks.opened), 3)
         self.assertTrue(excel.Workbooks.created[0].closed)
