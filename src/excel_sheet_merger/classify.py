@@ -181,13 +181,14 @@ def file_snapshot(path: Path) -> tuple[int, int, int, int]:
 
 _FULL_FINGERPRINT_LIMIT = 8 * 1024 * 1024
 _SAMPLE_SIZE = 64 * 1024
+_LARGE_FILE_SAMPLES = 17
 
 
 def file_fingerprint(path: Path, size: int) -> bytes:
-    """Fingerprint entire small files or 3 bounded regions of a large file.
+    """Hash small files completely; sample 17 spread-out windows in large ones.
 
-    This detects accidental edits retaining size/mtime, but sampled hashing
-    is not a cryptographic guarantee for unsampled content above 8 MiB.
+    The bounded read budget reduces repeated SMB IO, but edits outside sampled
+    windows can still go undetected; this is not a full-file integrity proof.
     """
     digest = hashlib.blake2b(digest_size=20)
     digest.update(str(size).encode('ascii'))
@@ -196,8 +197,11 @@ def file_fingerprint(path: Path, size: int) -> bytes:
             for chunk in iter(lambda: stream.read(128 * 1024), b''):
                 digest.update(chunk)
         else:
-            offsets = (0, size // 2 - _SAMPLE_SIZE // 2, size - _SAMPLE_SIZE)
-            for offset in offsets:
+            # Cover the entire file rather than just head/center/tail. The
+            # large-file cost remains bounded to 17 * 64KiB even on SMB.
+            last_offset = size - _SAMPLE_SIZE
+            for index in range(_LARGE_FILE_SAMPLES):
+                offset = last_offset * index // (_LARGE_FILE_SAMPLES - 1)
                 stream.seek(offset)
                 digest.update(offset.to_bytes(8, 'little'))
                 digest.update(stream.read(_SAMPLE_SIZE))

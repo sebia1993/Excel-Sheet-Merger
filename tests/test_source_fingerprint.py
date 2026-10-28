@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
 from openpyxl import Workbook, load_workbook
-from excel_sheet_merger.classify import scan_folder
+from excel_sheet_merger.classify import scan_folder, file_fingerprint
 from excel_sheet_merger.merge import SourceFileError, merge_group, _verify_source
 from excel_sheet_merger.failure_guidance import diagnose_failure
 
@@ -59,6 +59,61 @@ class ContentFingerprintTests(unittest.TestCase):
         self.mutate_with_preserved_metadata(big, b'REPLACEMENT', offset=big.stat().st_size // 2)
         with self.assertRaisesRegex(SourceFileError, '변경'):
             _verify_source(source)
+
+    def test_large_source_changed_at_25_percent_with_identical_metadata_is_rejected(self):
+        big = self.root / 'A사업장_20261028_11시.csv'
+        with big.open('wb') as dest:
+            dest.truncate(17 * 1024 * 1024)
+        self.csv('14시', b'ID\n1\n')
+        source = scan_folder(self.root).groups[0].inputs[0]
+        self.mutate_with_preserved_metadata(big, b'ALTERED!', offset=big.stat().st_size // 4)
+        with self.assertRaisesRegex(SourceFileError, '변경'):
+            _verify_source(source)
+
+    def test_large_source_changed_at_75_percent_with_identical_metadata_is_rejected(self):
+        big = self.root / 'A사업장_20261028_11시.csv'
+        with big.open('wb') as dest:
+            dest.truncate(17 * 1024 * 1024)
+        self.csv('14시', b'ID\n1\n')
+        source = scan_folder(self.root).groups[0].inputs[0]
+        self.mutate_with_preserved_metadata(big, b'ALTERED!', offset=big.stat().st_size * 3 // 4)
+        with self.assertRaisesRegex(SourceFileError, '변경'):
+            _verify_source(source)
+
+    def test_large_file_fingerprint_uses_exactly_17_bounded_reads(self):
+        source = self.root / 'large.bin'
+        with source.open('wb') as dest:
+            dest.truncate(64 * 1024 * 1024)
+        byte_counts = []
+        real_path = source
+
+        class ObservedFile:
+            def __init__(self):
+                self.stream = real_path.open('rb')
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                self.stream.close()
+
+            def seek(self, offset):
+                return self.stream.seek(offset)
+
+            def read(self, count):
+                data = self.stream.read(count)
+                byte_counts.append(len(data))
+                return data
+
+        class ObservedPath:
+            def open(self, mode):
+                assert mode == 'rb'
+                return ObservedFile()
+
+        fingerprint = file_fingerprint(ObservedPath(), source.stat().st_size)
+        self.assertEqual(len(fingerprint), 20)
+        self.assertEqual(byte_counts, [65536] * 17)
+        self.assertEqual(sum(byte_counts), 17 * 65536)
 
     def test_unchanged_mixed_inputs_keep_sheet_names_values_and_formulas(self):
         self.csv('11시', 'IP,코드\n192.0.2.5,00123\n'.encode('utf-8'))
