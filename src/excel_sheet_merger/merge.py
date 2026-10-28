@@ -26,6 +26,7 @@ from openpyxl.cell import WriteOnlyCell
 from .classify import MergeGroup, file_snapshot, file_fingerprint
 from .temp_workspace import OwnedScratch, cleanup_stale_workspaces
 from .xlsx_safety import validate_xlsx_archive
+from .workbook_resources import close_workbook_resources, save_workbook_safely
 
 MAX_ROWS = 1_048_576
 MAX_COLUMNS = 16_384
@@ -125,7 +126,10 @@ def _append_openpyxl(ws, path: Path) -> None:
     """Copy the sole worksheet's ordinary cells and layout without executing Excel."""
     try:
         validate_xlsx_archive(path)
-        source_wb = load_workbook(path, read_only=False, data_only=False, keep_links=False)
+        # Own the OS handle even if the parser raises and its traceback stays
+        # referenced by the GUI. Normal-mode loading materializes the workbook.
+        with path.open('rb') as source_stream:
+            source_wb = load_workbook(source_stream, read_only=False, data_only=False, keep_links=False)
     except Exception as exc:
         raise ValueError(f"Excel 파일을 열 수 없습니다 ({path.name}): {exc}") from exc
     try:
@@ -348,12 +352,12 @@ def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
             if replacements:
                 base = scratch.path / 'base.xlsx'
                 csv_part = scratch.path / 'csv.xlsx'
-                wb.save(base)
-                streamed_csv.save(csv_part)
+                save_workbook_safely(wb, base)
+                save_workbook_safely(streamed_csv, csv_part)
                 _check_stitch_capacity(output_dir, base, csv_part)
                 _stitch_csv_sheets(base, csv_part, replacements, result_path)
             else:
-                wb.save(result_path)
+                save_workbook_safely(wb, result_path)
             # Revalidate the source versions immediately before publishing.
             for item in group.inputs:
                 _verify_source(item)
@@ -372,16 +376,6 @@ def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
                 else:
                     status = MergeStatus.CREATED if candidate == final_path else MergeStatus.RENAMED
                     return MergeResult(candidate, status)
-        except Exception:
-            for book in (wb, streamed_csv):
-                if book is None:
-                    continue
-                for sheet in book.worksheets:
-                    if hasattr(sheet, 'closed') and not sheet.closed:
-                        try:
-                            sheet.close()
-                        except Exception:
-                            pass
-            raise
         finally:
-            wb.close()
+            close_workbook_resources(streamed_csv)
+            close_workbook_resources(wb)
