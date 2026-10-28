@@ -317,5 +317,84 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertTrue(output.path.is_file())
 
 
+class RedirectedSourcePathTests(unittest.TestCase):
+    """Avoid full hashing of unknown SMB/cloud locations hidden under local links."""
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.root = Path(self.scratch.name)
+
+    def test_ancestor_symlink_is_not_trusted_as_fixed_local(self):
+        from excel_sheet_merger.classify import _has_redirecting_path_component
+        real_dir = self.root / 'real'
+        real_dir.mkdir()
+        source = real_dir / 'source.csv'
+        source.write_bytes(b'hello')
+        linked = self.root / 'alias'
+        try:
+            linked.symlink_to(real_dir, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f'creating a directory link is unavailable: {exc}')
+        self.assertTrue(_has_redirecting_path_component(linked / 'source.csv'))
+        self.assertFalse(_has_redirecting_path_component(source))
+
+    def test_non_symlink_reparse_attribute_in_parent_is_detected(self):
+        from types import SimpleNamespace
+        from excel_sheet_merger.classify import _has_redirecting_path_component
+        REPARSE = 0x400  # Windows FILE_ATTRIBUTE_REPARSE_POINT
+        folder = self.root / 'folder'
+        folder.mkdir()
+        source = folder / 'source.csv'
+        source.write_bytes(b'hello')
+        actual_lstat = Path.lstat
+
+        def fake_lstat(item, *args, **kwargs):
+            real = actual_lstat(item, *args, **kwargs)
+            return SimpleNamespace(
+                st_mode=real.st_mode,
+                st_file_attributes=REPARSE if item == folder else 0,
+            )
+
+        with patch.object(Path, 'lstat', fake_lstat):
+            self.assertTrue(_has_redirecting_path_component(source))
+
+    def test_unreadable_path_component_falls_back_safely(self):
+        from excel_sheet_merger.classify import _has_redirecting_path_component
+        folder = self.root / 'folder'
+        folder.mkdir()
+        source = folder / 'source.csv'
+        source.write_bytes(b'hello')
+        real_lstat = Path.lstat
+
+        def unavailable_lstat(item, *args, **kwargs):
+            if item == folder:
+                raise PermissionError('reparse metadata unavailable')
+            return real_lstat(item, *args, **kwargs)
+
+        with patch.object(Path, 'lstat', unavailable_lstat):
+            self.assertTrue(_has_redirecting_path_component(source),
+                            'unknown links must not be approved for full hashing')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows junction requires cmd /c mklink')
+    def test_real_windows_junction_parent_is_not_fixed_local(self):
+        import subprocess
+        from excel_sheet_merger.classify import _is_fixed_local_drive
+        real_dir = self.root / 'local-real'
+        real_dir.mkdir()
+        source = real_dir / 'source.csv'
+        source.write_bytes(b'hello')
+        link_dir = self.root / 'junction'
+        result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(link_dir), str(real_dir)],
+                                capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            self.skipTest(f'junction unavailable: {result.stdout} {result.stderr}')
+        try:
+            self.assertFalse(_is_fixed_local_drive(link_dir / 'source.csv'))
+            self.assertTrue(_is_fixed_local_drive(source))
+        finally:
+            link_dir.rmdir()
+
+
 if __name__ == '__main__':
     unittest.main()

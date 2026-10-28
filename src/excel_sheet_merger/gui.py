@@ -564,11 +564,21 @@ class MergeApp(tk.Tk):
             messagebox.showinfo("결과 폴더", "먼저 원본 폴더를 선택해 주세요.")
             return
         destination = Path(self.folder.get()) / "병합결과"
-        destination.mkdir(parents=True, exist_ok=True)
-        if os.name == "nt":
-            os.startfile(str(destination))  # type: ignore[attr-defined]
-        else:
-            messagebox.showinfo("결과 폴더", str(destination))
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+            if os.name == "nt":
+                os.startfile(str(destination))  # type: ignore[attr-defined]
+            else:
+                messagebox.showinfo("결과 폴더", str(destination))
+        except OSError as exc:
+            guidance = diagnose_failure(exc)
+            self._write_log(f"결과 폴더 열기 실패: {destination} | {exc}")
+            messagebox.showerror(
+                "결과 폴더 열기 실패",
+                f"결과 폴더에 접근하지 못했습니다.\n경로: {destination}\n"
+                f"원인: {guidance.title} — {guidance.reason}\n"
+                f"조치: {guidance.action}",
+            )
 
     def destroy(self) -> None:
         # Prevent stale Tcl after callbacks when closing/reopening windows.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import hashlib
 import os
+import stat
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -188,6 +189,25 @@ _SAMPLE_SIZE = 64 * 1024
 _LARGE_FILE_SAMPLES = 17
 
 
+def _has_redirecting_path_component(path: Path) -> bool:
+    """Fail closed when any path component may redirect to another filesystem.
+
+    Use no-follow metadata, walking from root to leaf to avoid probing a
+    remote target if an ancestor is already a symlink or Windows junction.
+    FILE_ATTRIBUTE_REPARSE_POINT also covers junction/cloud redirect types
+    that Windows Path.is_symlink() does not recognize.
+    """
+    for component in (*reversed(path.parents), path):
+        try:
+            metadata = component.lstat()
+        except (OSError, ValueError):
+            return True
+        if (stat.S_ISLNK(metadata.st_mode)
+                or getattr(metadata, 'st_file_attributes', 0) & 0x400):
+            return True
+    return False
+
+
 def _is_fixed_local_drive(path: Path) -> bool:
     """Use complete moderate-size hashes only on confirmed fixed Windows drives.
 
@@ -204,7 +224,7 @@ def _is_fixed_local_drive(path: Path) -> bool:
         import ctypes
         if ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root)) != 3:  # DRIVE_FIXED
             return False
-        return not path.is_symlink()
+        return path.is_absolute() and not _has_redirecting_path_component(path)
     except (OSError, AttributeError, ValueError):
         return False
 

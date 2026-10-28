@@ -64,6 +64,31 @@ class GuiStabilityTests(unittest.TestCase):
         self.assertEqual(str(self.app.scan_button.cget('state')), 'normal')
         popup.assert_called_once()
 
+    def test_result_folder_permission_error_is_explained_without_gui_callback_crash(self):
+        self._valid_scan()
+        with patch('excel_sheet_merger.gui.Path.mkdir',
+                   side_effect=PermissionError(13, 'access denied')) as mkdir, \
+             patch('excel_sheet_merger.gui.messagebox.showerror') as popup:
+            self.app._open_results()
+        mkdir.assert_called_once()
+        popup.assert_called_once()
+        self.assertIn('접근', popup.call_args.args[1])
+        self.assertIn('권한', popup.call_args.args[1])
+        self.assertIn('병합결과', popup.call_args.args[1])
+        self.assertFalse(self.app.busy)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows Explorer callback is Windows-only')
+    def test_result_folder_explorer_error_has_korean_recovery(self):
+        folder = self._valid_scan()
+        with patch('excel_sheet_merger.gui.os.startfile',
+                   side_effect=OSError(53, 'unreachable share')) as opener, \
+             patch('excel_sheet_merger.gui.messagebox.showerror') as popup:
+            self.app._open_results()
+        opener.assert_called_once()
+        self.assertTrue((folder / '병합결과').is_dir())
+        popup.assert_called_once()
+        self.assertIn('결과 폴더', popup.call_args.args[1])
+
     def test_burst_of_log_events_renders_in_one_text_insert_without_losing_messages(self):
         with patch.object(self.app.log, 'insert', wraps=self.app.log.insert) as writes:
             for i in range(100):
