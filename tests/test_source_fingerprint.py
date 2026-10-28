@@ -179,6 +179,102 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertEqual(byte_counts, [65536] * 17)
         self.assertEqual(sum(byte_counts), 17 * 65536)
 
+    def test_full_fingerprint_rejects_unexpected_early_eof(self):
+        source = self.root / 'short.bin'
+        source.write_bytes(b'01234567')
+        # An SMB metadata cache can report a size before the stream is cut.
+        with self.assertRaisesRegex(ValueError, '원본 파일 읽기 불완전'):
+            file_fingerprint(source, 100)
+
+    def test_sampled_fingerprint_rejects_missing_window_bytes(self):
+        source = self.root / 'short-large.bin'
+        source.write_bytes(b'A' * (64 * 1024))
+        with patch('excel_sheet_merger.classify._is_fixed_local_drive', return_value=False):
+            with self.assertRaisesRegex(ValueError, '원본 파일 읽기 불완전'):
+                file_fingerprint(source, 9 * 1024 * 1024)
+
+    def test_partial_sample_reads_reassembled_without_digest_change(self):
+        source = self.root / 'large.bin'
+        with source.open('wb') as dest:
+            dest.truncate(9 * 1024 * 1024)
+        with source.open('r+b') as dest:
+            dest.seek(8 * 1024 * 1024)
+            dest.write(b'BEGIN-TEST-DATA')
+        expected = file_fingerprint(source, source.stat().st_size)
+        real_open = Path.open
+        read_lengths = []
+
+        class PartialReadWrapper:
+            def __init__(self, handle):
+                self.handle = handle
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.handle.close()
+            def seek(self, offset):
+                return self.handle.seek(offset)
+            def read(self, count):
+                data = self.handle.read(min(count, 32768))
+                read_lengths.append(len(data))
+                return data
+
+        class NetworkStylePath:
+            def open(self, mode):
+                self.assert_mode(mode)
+                return PartialReadWrapper(real_open(source, mode))
+            @staticmethod
+            def assert_mode(mode):
+                assert mode == 'rb'
+
+        with patch('excel_sheet_merger.classify._is_fixed_local_drive', return_value=False):
+            actual = file_fingerprint(NetworkStylePath(), source.stat().st_size)
+        self.assertEqual(actual, expected)
+        self.assertEqual(sum(read_lengths), 17 * 65536)
+
+    def test_full_fingerprint_rejects_unexpected_file_growth(self):
+        source = self.root / 'growing.bin'
+        source.write_bytes(b'ABCDEFGHIJ')
+        with self.assertRaisesRegex(ValueError, '원본 파일 읽기 불완전'):
+            file_fingerprint(source, 7)
+
+    def test_verify_source_identifies_filename_when_fingerprint_read_is_incomplete(self):
+        self.csv('11시', b'ID\n1\n')
+        self.csv('14시', b'ID\n2\n')
+        original = scan_folder(self.root).groups[0].inputs[0]
+        with patch('excel_sheet_merger.merge.file_fingerprint',
+                   side_effect=ValueError('원본 파일 읽기 불완전: 불완전한 읽기')):
+            with self.assertRaises(SourceFileError) as caught:
+                _verify_source(original)
+        self.assertEqual(caught.exception.filename, original.file_name)
+        self.assertIn('원본 파일 읽기 불완전', str(caught.exception))
+
+    def test_incomplete_read_error_is_actionable_in_korean(self):
+        filename = 'A사업장_20261028_11시.csv'
+        advice = diagnose_failure(SourceFileError(
+            filename, ValueError('원본 파일 읽기 불완전: 1바이트가 누락됨')))
+        self.assertEqual(advice.filename, filename)
+        self.assertEqual(advice.code, 'SOURCE_CHANGED')
+        self.assertIn('다시', advice.action)
+        self.assertIn('읽', advice.reason)
+
+    def test_scan_does_not_accept_incomplete_content_fingerprint(self):
+        short = self.csv('11시', b'ID\n1\n')
+        self.csv('14시', b'ID\n2\n')
+        from excel_sheet_merger.classify import file_snapshot
+        real_snapshot = file_snapshot
+
+        def stale_snapshot(path):
+            original = real_snapshot(path)
+            if path == short:
+                return (original[0] + 65536, original[1], original[2], original[3])
+            return original
+
+        with patch('excel_sheet_merger.classify.file_snapshot', side_effect=stale_snapshot):
+            report = scan_folder(self.root)
+        self.assertEqual(report.groups, ())
+        self.assertTrue(any(item.name == short.name for item in report.rejected))
+        self.assertTrue(any('읽기 불완전' in item.reason for item in report.rejected))
+
     def test_unchanged_mixed_inputs_keep_sheet_names_values_and_formulas(self):
         self.csv('11시', 'IP,코드\n192.0.2.5,00123\n'.encode('utf-8'))
         wb = Workbook()

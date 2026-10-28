@@ -220,17 +220,36 @@ def file_fingerprint(path: Path, size: int) -> bytes:
     with path.open('rb') as stream:
         if (size <= _FULL_FINGERPRINT_LIMIT or
                 (size <= _FIXED_LOCAL_FULL_FINGERPRINT_LIMIT and _is_fixed_local_drive(path))):
+            observed_size = 0
             for chunk in iter(lambda: stream.read(128 * 1024), b''):
+                observed_size += len(chunk)
+                if observed_size > size:
+                    raise ValueError("원본 파일 읽기 불완전: 검사 중 파일 크기가 증가했습니다. 다시 파일 분석을 실행하세요.")
                 digest.update(chunk)
+            if observed_size != size:
+                raise ValueError(
+                    f"원본 파일 읽기 불완전: 예상 {size:,}바이트 중 "
+                    f"{observed_size:,}바이트만 읽었습니다. 다시 파일 분석을 실행하세요."
+                )
         else:
-            # Cover the entire file rather than just head/center/tail. The
-            # large-file cost remains bounded to 17 * 64KiB even on SMB.
+            # Keep the 17 x 64 KiB remote-read budget. A network stream may
+            # return a partial chunk; continue until the window is complete,
+            # but never accept premature EOF as a valid content fingerprint.
             last_offset = size - _SAMPLE_SIZE
             for index in range(_LARGE_FILE_SAMPLES):
                 offset = last_offset * index // (_LARGE_FILE_SAMPLES - 1)
                 stream.seek(offset)
                 digest.update(offset.to_bytes(8, 'little'))
-                digest.update(stream.read(_SAMPLE_SIZE))
+                remaining = _SAMPLE_SIZE
+                while remaining:
+                    chunk = stream.read(remaining)
+                    if not chunk:
+                        raise ValueError(
+                            f"원본 파일 읽기 불완전: 위치 {offset:,}바이트의 "
+                            "표본을 끝까지 읽지 못했습니다. 다시 파일 분석을 실행하세요."
+                        )
+                    digest.update(chunk)
+                    remaining -= len(chunk)
     return digest.digest()
 
 

@@ -84,6 +84,13 @@ def diagnose_failure(error: Exception, group: MergeGroup | None = None) -> Failu
                                '인코딩/파일 형식이 맞지 않을 수 있습니다. 이 오류만으로 암호화 여부는 확정할 수 없습니다.',
                                '회사 보안 정책을 준수하여 열람 권한이 있는 프로그램에서 정상 CSV/Excel로 내보내고 다시 시도하거나, 문서보안 담당자에게 문의해 주세요.',
                                technical)
+    if '원본 파일 읽기 불완전' in technical:
+        return FailureGuidance(filename, 'SOURCE_CHANGED', '원본 파일 읽기 불완전',
+                               '원본 파일을 검사하는 동안 예상한 크기만큼 읽지 못했습니다. '
+                               '파일이 변경되었거나 공유 저장소의 읽기 응답이 불완전했을 수 있습니다.',
+                               '원본 파일의 저장이 끝났는지, 공유폴더 연결 상태가 정상인지 확인하고 '
+                               '파일 분석부터 다시 실행해 주세요. 기존 결과 파일을 확인한 뒤 재시도하세요.',
+                               technical)
     if '파일 분석 이후 원본 파일' in technical or '파일 분석 중 원본 파일' in technical:
         return FailureGuidance(filename, 'SOURCE_CHANGED', '원본 파일이 변경됨',
                                '파일 분석 이후 원본 파일 내용이 변경되어 이전 분석 결과를 사용할 수 없습니다.',

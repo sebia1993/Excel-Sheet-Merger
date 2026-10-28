@@ -291,6 +291,12 @@ def _verify_source(item) -> None:
                     "파일 분석 이후 원본 파일 내용이 변경되었습니다. 다시 파일 분석을 실행하세요."))
     except OSError as exc:
         raise SourceFileError(item.file_name, ValueError(f"원본 파일 확인 실패: {exc}")) from exc
+    except ValueError as exc:
+        if isinstance(exc, SourceFileError):
+            raise
+        # A truncated source read can occur after scan, including during the
+        # final pre-publication check. Always retain the affected file name.
+        raise SourceFileError(item.file_name, exc) from exc
 
 
 def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
