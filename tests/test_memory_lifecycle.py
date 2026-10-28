@@ -107,5 +107,72 @@ class ExcelSourceMemoryLifecycleTests(unittest.TestCase):
                          'the on-disk source must remain unmodified')
 
 
+    def test_blank_comment_cell_survives_excel_sheet_copy(self):
+        """A note-only blank cell is user data even though it has no style."""
+        from openpyxl.comments import Comment
+        from openpyxl import Workbook, load_workbook
+
+        source_book = Workbook()
+        ws = source_book.active
+        ws['A1'] = '검증 데이터'
+        ws['D20'].comment = Comment('점검 완료 후 검토 바랍니다', '담당자')
+        self.assertIsNone(ws['D20'].value)
+        self.assertFalse(ws['D20'].has_style)
+        source_book.save(self.source)
+        source_book.close()
+        original_bytes = self.source.read_bytes()
+
+        result = Workbook()
+        _append_openpyxl(result.active, self.source)
+        output = self.folder / 'with-comment.xlsx'
+        result.save(output)
+        result.close()
+
+        reopened = load_workbook(output)
+        try:
+            self.assertEqual(reopened.active['A1'].value, '검증 데이터')
+            self.assertIsNone(reopened.active['D20'].value)
+            self.assertIsNotNone(reopened.active['D20'].comment,
+                                 'Note-only blank cells must not silently disappear')
+            self.assertEqual(reopened.active['D20'].comment.text,
+                             '점검 완료 후 검토 바랍니다')
+            self.assertEqual(reopened.active['D20'].comment.author, '담당자')
+        finally:
+            reopened.close()
+        self.assertEqual(self.source.read_bytes(), original_bytes)
+
+    def test_comment_only_cell_survives_public_group_merge_and_renamed_output(self):
+        from openpyxl.comments import Comment
+        from excel_sheet_merger.classify import scan_folder
+        from excel_sheet_merger.merge import merge_group
+
+        source_path = self.folder / 'A사업장_20261029_11시.xlsx'
+        excel = Workbook()
+        excel.active['A1'] = '시트 원본'
+        excel.active['D20'].comment = Comment('값은 없지만 필요한 업무 메모', '검토팀')
+        excel.save(source_path)
+        excel.close()
+        raw = source_path.read_bytes()
+        (self.folder / 'A사업장_20261029_14시.csv').write_text(
+            'ID,IP\n00123,192.0.2.9\n', encoding='utf-8')
+        group = scan_folder(self.folder).groups[0]
+        first = merge_group(group, self.folder / '병합결과')
+        second = merge_group(group, self.folder / '병합결과')
+        self.assertEqual(first.path.name, 'A사업장_20261029.xlsx')
+        self.assertEqual(second.path.name, 'A사업장_20261029 (2).xlsx')
+        for result in (first, second):
+            merged = load_workbook(result.path)
+            try:
+                self.assertEqual(merged.sheetnames, ['11시', '14시'])
+                self.assertIsNone(merged['11시']['D20'].value)
+                self.assertEqual(merged['11시']['D20'].comment.text,
+                                 '값은 없지만 필요한 업무 메모')
+                self.assertEqual(merged['11시']['D20'].comment.author, '검토팀')
+                self.assertEqual(merged['14시']['A2'].value, '00123')
+            finally:
+                merged.close()
+        self.assertEqual(source_path.read_bytes(), raw)
+
+
 if __name__ == '__main__':
     unittest.main()

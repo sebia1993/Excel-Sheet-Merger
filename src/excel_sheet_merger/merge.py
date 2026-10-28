@@ -151,7 +151,8 @@ def _append_openpyxl(ws, path: Path) -> None:
         # requiring another list of all source cells in memory.
         while source._cells:  # pinned openpyxl 3.1.x internal API
             _coordinate, cell = source._cells.popitem()
-            if cell.value is None and not cell.has_style:
+            if (cell.value is None and not cell.has_style
+                    and cell.comment is None and cell.hyperlink is None):
                 continue
             if cell.value is not None:
                 has_data = True
