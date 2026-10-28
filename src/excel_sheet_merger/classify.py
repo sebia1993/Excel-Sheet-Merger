@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import hashlib
+import os
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -182,20 +183,43 @@ def file_snapshot(path: Path) -> tuple[int, int, int, int]:
 
 
 _FULL_FINGERPRINT_LIMIT = 8 * 1024 * 1024
+_FIXED_LOCAL_FULL_FINGERPRINT_LIMIT = 32 * 1024 * 1024
 _SAMPLE_SIZE = 64 * 1024
 _LARGE_FILE_SAMPLES = 17
 
 
-def file_fingerprint(path: Path, size: int) -> bytes:
-    """Hash small files completely; sample 17 spread-out windows in large ones.
+def _is_fixed_local_drive(path: Path) -> bool:
+    """Use complete moderate-size hashes only on confirmed fixed Windows drives.
 
-    The bounded read budget reduces repeated SMB IO, but edits outside sampled
-    windows can still go undetected; this is not a full-file integrity proof.
+    A mapped network drive must not cause full SMB reads. UNC, unknown drives,
+    symlinks, or platforms without this trustworthy classification fall back
+    to bounded sampling. No filesystem data is modified during detection.
+    """
+    if os.name != 'nt' or not isinstance(path, Path):
+        return False
+    try:
+        root = path.anchor
+        if not root or root.startswith('\\\\'):
+            return False
+        import ctypes
+        if ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root)) != 3:  # DRIVE_FIXED
+            return False
+        return not path.is_symlink()
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def file_fingerprint(path: Path, size: int) -> bytes:
+    """Hash small files and moderate fixed-local files completely.
+
+    SMB, unknown or very large sources (>8 MiB) use 17 x 64 KiB windows.
+    This bounded remote read budget trades complete detection for SMB safety.
     """
     digest = hashlib.blake2b(digest_size=20)
     digest.update(str(size).encode('ascii'))
     with path.open('rb') as stream:
-        if size <= _FULL_FINGERPRINT_LIMIT:
+        if (size <= _FULL_FINGERPRINT_LIMIT or
+                (size <= _FIXED_LOCAL_FULL_FINGERPRINT_LIMIT and _is_fixed_local_drive(path))):
             for chunk in iter(lambda: stream.read(128 * 1024), b''):
                 digest.update(chunk)
         else:

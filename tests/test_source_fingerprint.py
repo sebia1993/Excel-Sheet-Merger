@@ -80,6 +80,70 @@ class ContentFingerprintTests(unittest.TestCase):
         with self.assertRaisesRegex(SourceFileError, '변경'):
             _verify_source(source)
 
+    def test_confirmed_local_drive_detects_stealth_edit_between_old_samples(self):
+        # Previous 17-window layout has a gap from 64 KiB to ~1.06 MiB.
+        big = self.root / 'A사업장_20261028_11시.csv'
+        with big.open('wb') as dest:
+            dest.truncate(17 * 1024 * 1024)
+        self.csv('14시', b'ID\n1\n')
+        with patch('excel_sheet_merger.classify._is_fixed_local_drive',
+                   return_value=True, create=True):
+            scanned = scan_folder(self.root)
+            self.mutate_with_preserved_metadata(big, b'INSIDE-GAP', offset=512 * 1024)
+            with self.assertRaisesRegex(SourceFileError, '변경'):
+                _verify_source(scanned.groups[0].inputs[0])
+
+    def test_unconfirmed_local_drive_keeps_original_sample_budget(self):
+        # A Windows mapped drive, UNC share, or unknown drive must not be
+        # forced to stream the entire large file just for a fingerprint.
+        source = self.root / 'large.bin'
+        with source.open('wb') as dest:
+            dest.truncate(17 * 1024 * 1024)
+        actual_open = Path.open
+        counted = []
+
+        class MeasuredFile:
+            def __init__(self, handle):
+                self.handle = handle
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.handle.close()
+            def read(self, size):
+                contents = self.handle.read(size)
+                counted.append(len(contents))
+                return contents
+            def seek(self, offset):
+                return self.handle.seek(offset)
+
+        def observed_open(path, mode='r', *args, **kwargs):
+            handle = actual_open(path, mode, *args, **kwargs)
+            if path == source and mode == 'rb':
+                return MeasuredFile(handle)
+            return handle
+
+        with patch('excel_sheet_merger.classify._is_fixed_local_drive',
+                   return_value=False, create=True), patch.object(Path, 'open', observed_open):
+            fingerprint = file_fingerprint(source, source.stat().st_size)
+        self.assertEqual(len(fingerprint), 20)
+        self.assertEqual(counted, [64 * 1024] * 17)
+
+    @unittest.skipUnless(os.name == 'nt', 'fixed/removable/remote Windows drive classification')
+    def test_windows_local_disk_versus_unc_path(self):
+        from excel_sheet_merger.classify import _is_fixed_local_drive
+        self.assertTrue(_is_fixed_local_drive(self.root), 'runner temp directory is local NTFS')
+        self.assertFalse(_is_fixed_local_drive(Path(r'\\server\share\folder\file.csv')))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows drive-type API is only available on Windows')
+    def test_windows_mapped_and_unknown_drives_are_not_assumed_fixed(self):
+        from excel_sheet_merger.classify import _is_fixed_local_drive
+        with patch('ctypes.windll.kernel32.GetDriveTypeW', return_value=4):
+            self.assertFalse(_is_fixed_local_drive(self.root))  # DRIVE_REMOTE
+        with patch('ctypes.windll.kernel32.GetDriveTypeW', return_value=1):
+            self.assertFalse(_is_fixed_local_drive(self.root))  # DRIVE_NO_ROOT_DIR
+        with patch('ctypes.windll.kernel32.GetDriveTypeW', side_effect=OSError('unavailable')):
+            self.assertFalse(_is_fixed_local_drive(self.root))
+
     def test_large_file_fingerprint_uses_exactly_17_bounded_reads(self):
         source = self.root / 'large.bin'
         with source.open('wb') as dest:
