@@ -109,6 +109,22 @@ def _safe_filename(name: str) -> str:
     return name[:150].rstrip(" .") or "사업장"
 
 
+def _safe_group_output_name(site: str, date: str) -> str:
+    """Retain the date and site identity when the 150-char cap truncates it.
+
+    Ordinary group filenames use the exact historical sanitization. Only
+    extremely long site names need a deterministic collision-safe tail.
+    """
+    tail = f"_{date}"
+    current = _safe_filename(site + tail)
+    if current.endswith(tail):
+        return current + ".xlsx"
+    fingerprint = hashlib.blake2b(site.encode("utf-8"), digest_size=6).hexdigest()
+    reserved = f"~{fingerprint}{tail}"
+    short_site = _safe_filename(site)[:150 - len(reserved)].rstrip(" .")
+    return short_site + reserved + ".xlsx"
+
+
 def clean_sheet_name(name: str) -> str:
     name = INVALID_SHEET_CHARS.sub("-", name).strip(" '\t\r\n") or "시트"
     encoded = name.encode("utf-16-le")[:62]
@@ -309,7 +325,7 @@ def scan_folder(folder: Path) -> ScanReport:
         names = unique_sheet_names([i.sheet_name for i in items])
         assigned = tuple(replace(item, sheet_name=sheet_name) for item, sheet_name in zip(items, names))
         first = assigned[0]
-        output_name = _safe_filename(first.site + "_" + first.date) + ".xlsx"
+        output_name = _safe_group_output_name(first.site, first.date)
         all_groups.append(MergeGroup(first.site, first.date, assigned, output_name))
     all_groups.sort(key=lambda g: (g.site.casefold(), g.date))
     groups = tuple(g for g in all_groups if len(g.inputs) >= 2)

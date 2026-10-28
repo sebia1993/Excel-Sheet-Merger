@@ -70,6 +70,53 @@ class ClassifyTests(unittest.TestCase):
             self.assertEqual(len(result.singles), 1)
             self.assertEqual(len(result.rejected), 0)
 
+    def test_long_site_names_keep_dates_and_publish_distinct_results(self):
+        from openpyxl import load_workbook
+        from excel_sheet_merger.merge import merge_group
+
+        long_site = 'Office' + 'A' * 160
+        with tempfile.TemporaryDirectory() as name:
+            folder = Path(name)
+            for date in ('20261028', '20261029'):
+                for hour in ('11시', '14시'):
+                    (folder / f'{long_site}_{date}_{hour}.csv').write_text(
+                        f'date,ID\n{date},00123\n', encoding='utf8')
+            result = scan_folder(folder)
+            self.assertEqual(len(result.groups), 2)
+            outputs = {g.date: g.output_name for g in result.groups}
+            for date in ('20261028','20261029'):
+                self.assertTrue(outputs[date].endswith(f'_{date}.xlsx'))
+                self.assertLessEqual(len(outputs[date]), 155)
+            self.assertNotEqual(outputs['20261028'], outputs['20261029'])
+            for g in result.groups:
+                merged = merge_group(g, folder / '병합결과')
+                self.assertEqual(merged.path.name, outputs[g.date])
+                wb = load_workbook(merged.path, read_only=True)
+                try:
+                    self.assertEqual(wb.sheetnames, ['11시','14시'])
+                    self.assertEqual(wb['11시']['A2'].value, g.date)
+                    self.assertEqual(wb['11시']['B2'].value, '00123')
+                finally:
+                    wb.close()
+            self.assertEqual(len(list((folder/'병합결과').glob('*.xlsx'))), 2)
+
+    def test_long_sites_with_same_truncated_prefix_stay_separate(self):
+        site_a = 'Office' + 'B' * 160 + 'X'
+        site_b = 'Office' + 'B' * 160 + 'Y'
+        with tempfile.TemporaryDirectory() as name:
+            folder = Path(name)
+            for site in (site_a, site_b):
+                for hour in ('11시', '14시'):
+                    (folder / f'{site}_20261029_{hour}.csv').write_text(
+                        'ID\n00123\n', encoding='utf8')
+            report = scan_folder(folder)
+            self.assertEqual(len(report.groups), 2)
+            names = [g.output_name for g in report.groups]
+            self.assertEqual(len(set(names)), 2)
+            self.assertTrue(all(v.endswith('_20261029.xlsx') for v in names))
+            self.assertTrue(all(len(v) <= 155 for v in names))
+            self.assertEqual({g.site for g in report.groups}, {site_a, site_b})
+
     def test_12_hour_period_conversion(self):
         self.assertEqual((parse_filename(Path('사업장_20261028_오후2시.csv')).hour, parse_filename(Path('사업장_20261028_오전12시.csv')).hour), (14, 0))
         self.assertEqual(parse_filename(Path('사업장_20261028_오후12시.csv')).hour, 12)
