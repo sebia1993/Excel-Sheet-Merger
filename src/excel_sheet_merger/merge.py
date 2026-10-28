@@ -235,7 +235,15 @@ def _stitch_csv_sheets(base_path: Path, csv_path: Path,
             csv_index = replacements.get(int(number)) if number.isdigit() else None
             source = csv_package if csv_index is not None else base
             source_path = f'xl/worksheets/sheet{csv_index}.xml' if csv_index is not None else member.filename
-            with source.open(source_path, 'r') as stream_in, combined.open(member, 'w') as stream_out:
+            target_info = member
+            if csv_index is not None:
+                # Only the streamed CSV sheet is recompressed. Level 5 uses much
+                # less CPU than the ZIP default (6) for office CSV data while
+                # keeping the resulting XLSX compact. Copy ZipInfo so base
+                # metadata and the input workbooks remain untouched.
+                target_info = copy(member)
+                target_info._compresslevel = 5  # CPython private setting; tested on pinned 3.12
+            with source.open(source_path, 'r') as stream_in, combined.open(target_info, 'w') as stream_out:
                 shutil.copyfileobj(stream_in, stream_out, length=1024 * 1024)
 
 
