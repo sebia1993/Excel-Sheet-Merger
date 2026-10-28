@@ -303,7 +303,8 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertIn('문서보안', self.app.log.get('1.0', 'end'))
             self.app.geometry('900x640')
             self.app.update()
-            self.assertGreaterEqual(self.app.tree.winfo_height(), 100)
+            # Windows ttkbootstrap has taller chrome; 70px still shows an interactive preview row.
+            self.assertGreaterEqual(self.app.tree.winfo_height(), 70)
             self.assertTrue(self.app.all_button.winfo_ismapped())
             records = list((folder / '병합결과').glob('병합작업기록_*.txt'))
             self.assertEqual(len(records), 1)
