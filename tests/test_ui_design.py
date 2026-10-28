@@ -271,6 +271,102 @@ class GuiBehaviorTests(unittest.TestCase):
         self.assertNotIn(initial, timers)
         self.assertIn(self.app._poll_job, timers)
 
+    def test_cp949_failure_shows_filename_reason_and_action_in_gui_and_popup(self):
+        # The user should not need to open a TXT file or read a Python codec error.
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td)
+            (folder / 'A사업장_20261028_11시.csv').write_text('ID\n001\n', encoding='utf-8')
+            bad = folder / 'A사업장_20261028_14시.csv'
+            bad.write_bytes(b'ID\n\xff\x80\xff\n')
+            self.app.folder.set(str(folder))
+            self.app._scan()
+            with patch('excel_sheet_merger.gui.threading.Thread'):
+                self.app._start_merge(False)
+            self.app._worker_merge(list(self.app.report.groups), folder / '병합결과')
+            events = list(self.app.events.queue)
+            self.assertEqual(len([e for e in events if e[0] == 'failure']), 1)
+            with patch('excel_sheet_merger.gui.messagebox.showwarning') as popup:
+                self.app._consume_events()
+            self.assertEqual(len(self.app.failure_messages), 1)
+            self.app.update_idletasks()  # Tk maps a freshly packed label on the next idle layout pass.
+            self.assertEqual(self.app.failure_banner.winfo_manager(), 'pack')
+            self.assertTrue(self.app.failure_banner.winfo_ismapped())
+            self.assertTrue(self.app.log_expanded)
+            self.assertIn(bad.name, self.app.failure_text.get())
+            self.assertIn('인코딩', self.app.failure_text.get())
+            self.assertIn('문서보안', self.app.failure_text.get())
+            self.assertIn('확정', self.app.failure_text.get())
+            self.assertIn(bad.name, popup.call_args.args[1])
+            self.assertIn('담당자', popup.call_args.args[1])
+            self.assertIn('조치', popup.call_args.args[1])
+            self.assertIn('cp949', self.app.log.get('1.0', 'end').lower())
+            self.assertIn('문서보안', self.app.log.get('1.0', 'end'))
+            self.app.geometry('900x640')
+            self.app.update()
+            self.assertGreaterEqual(self.app.tree.winfo_height(), 100)
+            self.assertTrue(self.app.all_button.winfo_ismapped())
+            records = list((folder / '병합결과').glob('병합작업기록_*.txt'))
+            self.assertEqual(len(records), 1)
+            text = records[0].read_text(encoding='utf-8-sig')
+            self.assertIn(bad.name, text)
+            self.assertIn('조치:', text)
+
+    def test_multi_group_failure_reports_each_file_while_successful_group_completes(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td)
+            for site in ('A사업장', 'B사업장', 'C사업장'):
+                (folder / f'{site}_20261028_11시.csv').write_text('ID\n001\n', encoding='utf-8')
+                other = folder / f'{site}_20261028_14시.csv'
+                if site == 'A사업장':
+                    other.write_bytes(b'\xff\x80')
+                elif site == 'B사업장':
+                    other.write_bytes(b'')
+                else:
+                    other.write_text('ID\n002\n', encoding='utf-8')
+            self.app.folder.set(str(folder))
+            self.app._scan()
+            with patch('excel_sheet_merger.gui.threading.Thread'):
+                self.app._start_merge(False)
+            self.app._worker_merge(list(self.app.report.groups), folder / '병합결과')
+            with patch('excel_sheet_merger.gui.messagebox.showwarning') as popup:
+                self.app._consume_events()
+            self.assertIn('완료 1개', self.app.state_text.get())
+            self.assertIn('실패 2개', self.app.state_text.get())
+            self.assertEqual(len(self.app.failure_messages), 2)
+            dialog = popup.call_args.args[1]
+            self.assertIn('A사업장_20261028_14시.csv', dialog)
+            self.assertIn('B사업장_20261028_14시.csv', dialog)
+            self.assertIn('권한', dialog)
+            self.assertTrue((folder / '병합결과' / 'C사업장_20261028.xlsx').exists())
+            self.assertIn('실패 2건', self.app.failure_text.get())
+
+    def test_new_scan_and_merge_clear_old_failure_guidance(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td)
+            (folder / 'A사업장_20261028_11시.csv').write_text('ID\n001\n', encoding='utf-8')
+            bad = folder / 'A사업장_20261028_14시.csv'
+            bad.write_bytes(b'\xff\x80')
+            self.app.folder.set(str(folder))
+            self.app._scan()
+            with patch('excel_sheet_merger.gui.threading.Thread'):
+                self.app._start_merge(False)
+            self.app._worker_merge(list(self.app.report.groups), folder / '병합결과')
+            with patch('excel_sheet_merger.gui.messagebox.showwarning'):
+                self.app._consume_events()
+            self.assertTrue(self.app.failure_messages)
+            bad.write_text('ID\n002\n', encoding='utf-8')
+            self.app._scan()
+            self.assertFalse(self.app.failure_messages)
+            self.assertEqual(self.app.failure_text.get(), '')
+            self.assertEqual(self.app.failure_banner.winfo_manager(), '')
+            with patch('excel_sheet_merger.gui.threading.Thread'):
+                self.app._start_merge(False)
+            self.app._worker_merge(list(self.app.report.groups), folder / '병합결과')
+            with patch('excel_sheet_merger.gui.messagebox.showinfo'):
+                self.app._consume_events()
+            self.assertEqual(self.app.failure_text.get(), '')
+            self.assertFalse(self.app.failure_messages)
+
     def test_collapsible_log_and_failed_job_expands_it(self):
         # Catches failure details remaining hidden when conversion fails.
         self.app._toggle_log()

@@ -40,6 +40,17 @@ class MergeResult:
     status: MergeStatus
 
 
+class SourceFileError(ValueError):
+    """Keep the source filename and original exception chain for safe GUI advice.
+
+    Subclass ValueError to preserve callers that handle conversion failures.
+    """
+
+    def __init__(self, filename: str, error: Exception) -> None:
+        self.filename = filename
+        super().__init__(str(error))
+
+
 def detect_csv_encoding(path: Path) -> str:
     """UTF BOM을 우선하고, 전체 파일의 UTF-8 유효성을 검사한 후 CP949로 대체.
 
@@ -212,16 +223,19 @@ def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
         wb.remove(wb.active)  # no default "Sheet" in the output
     try:
         for item in group.inputs:
-            ws = wb.create_sheet(title=item.sheet_name)
-            extension = item.path.suffix.casefold()
-            if extension == '.csv':
-                _append_csv(ws, item.path)
-            elif extension in ('.xlsx', '.xlsm'):
-                _append_openpyxl(ws, item.path)
-            elif extension == '.xls':
-                _append_xls(ws, item.path)
-            else:
-                raise ValueError(f"지원하지 않는 Excel 형식입니다: {item.file_name}")
+            try:
+                ws = wb.create_sheet(title=item.sheet_name)
+                extension = item.path.suffix.casefold()
+                if extension == '.csv':
+                    _append_csv(ws, item.path)
+                elif extension in ('.xlsx', '.xlsm'):
+                    _append_openpyxl(ws, item.path)
+                elif extension == '.xls':
+                    _append_xls(ws, item.path)
+                else:
+                    raise ValueError(f"지원하지 않는 Excel 형식입니다: {item.file_name}")
+            except Exception as exc:
+                raise SourceFileError(item.file_name, exc) from exc
         wb.save(tmp_path)
         # Avoid TOCTOU: the final filename is claimed by an exclusive operation,
         # not by a prior exists() check. Another process may publish first.

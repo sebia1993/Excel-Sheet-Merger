@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .classify import MergeGroup, ScanReport, scan_folder
+from .failure_guidance import FailureGuidance, diagnose_failure
 from .merge import MergeStatus, merge_group
 from .ui_theme import COLORS, FONT, configure_theme
 
@@ -45,6 +46,8 @@ class MergeApp(tk.Tk):
         self.events: queue.Queue[tuple] = queue.Queue()
         self.busy = False
         self.log_expanded = False
+        self.failure_messages: list[FailureGuidance] = []
+        self.failure_text = tk.StringVar(value="")
         self._style()
         self._layout()
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -163,6 +166,9 @@ class MergeApp(tk.Tk):
     def _log_card(self, root: ttk.Frame) -> None:
         frame, card = self._card(root, 4)
         frame.pack(side="bottom", fill="x", pady=(6, 6))
+        # Remains visible after a failed run even when the detailed log is collapsed.
+        self.failure_banner = ttk.Label(card, textvariable=self.failure_text,
+                                        style="Office.Failure.TLabel", justify="left", wraplength=850)
         self.log_toggle = ttk.Button(card, text="작업 기록 보기  ▾", style="Office.Link.TButton", command=self._toggle_log)
         self.log_toggle.pack(anchor="w")
         self.log_panel = ttk.Frame(card, style="Office.Card.TFrame")
@@ -206,6 +212,36 @@ class MergeApp(tk.Tk):
     def _show_log(self) -> None:
         if not self.log_expanded:
             self._toggle_log()
+
+    def _reset_failures(self) -> None:
+        """Avoid carrying stale failure advice into the next scan or merge job."""
+        self.failure_messages.clear()
+        self.failure_text.set("")
+        self.failure_banner.pack_forget()
+        self.log.configure(height=4)
+
+    def _register_failure(self, advice: FailureGuidance) -> None:
+        """Called only from the UI thread when a worker queues a failure."""
+        self.failure_messages.append(advice)
+        self.failure_text.set(
+            f"실패 {len(self.failure_messages)}건 · 파일: {advice.filename}\n"
+            f"원인: {advice.reason}\n조치: {advice.action}"
+        )
+        if not self.failure_banner.winfo_manager():
+            self.failure_banner.pack(fill="x", padx=5, pady=(2, 3), before=self.log_toggle)
+        # Keep the preview useful at the 900x640 minimum window size.
+        self.log.configure(height=2)
+        self._show_log()
+
+    def _failure_dialog_text(self) -> str:
+        if not self.failure_messages:
+            return "\n작업 기록에서 상세 오류를 확인해 주세요."
+        details = []
+        for advice in self.failure_messages[:3]:
+            details.append(f"파일: {advice.filename}\n원인: {advice.reason}\n조치: {advice.action}")
+        remaining = len(self.failure_messages) - len(details)
+        suffix = f"\n\n그 외 실패 {remaining}건은 작업 기록에서 확인하세요." if remaining > 0 else ""
+        return "\n\n" + "\n\n".join(details) + suffix
 
     def _set_enabled(self, can_merge: bool) -> None:
         enabled = can_merge and not self.busy
@@ -284,6 +320,7 @@ class MergeApp(tk.Tk):
             messagebox.showerror("파일 분석 실패", str(exc))
             return
         self.report = report
+        self._reset_failures()
         self.checked_group_ids.clear()
         self.group_map.clear()
         for entry in self.tree.get_children():
@@ -327,6 +364,7 @@ class MergeApp(tk.Tk):
             messagebox.showinfo("병합 선택", "병합할 그룹을 선택해 주세요." if selection_only else "병합 대상 그룹이 없습니다.")
             return
         output_dir = Path(self.folder.get()) / "병합결과"
+        self._reset_failures()
         self.busy = True
         self._set_enabled(False)
         self.progress.configure(maximum=len(groups), value=0)
@@ -351,8 +389,11 @@ class MergeApp(tk.Tk):
                 )
         except Exception as exc:
             failed += 1
-            item = f"병합 작업 실패: {exc}"
+            advice = diagnose_failure(exc)
+            item = (f"병합 작업 실패: {advice.filename} | 원인: {advice.reason} | "
+                    f"조치: {advice.action} | 기술 오류: {advice.technical}")
             records.append(item)
+            self.events.put(("failure", advice))
             self.events.put(("log", item))
         finally:
             try:
@@ -379,7 +420,11 @@ class MergeApp(tk.Tk):
                 raise ValueError(f"알 수 없는 병합 결과: {outcome.status}")
         except Exception as exc:
             failed += 1
-            item = f"실패: {group.output_name} | {exc}"
+            advice = diagnose_failure(exc, group)
+            item = (f"실패: {group.output_name} | 파일: {advice.filename} | "
+                    f"원인: {advice.reason} | 조치: {advice.action} | "
+                    f"기술 오류: {advice.technical}")
+            self.events.put(("failure", advice))
         records.append(item)
         self.events.put(("log", item))
         self.events.put(("progress", index, total))
@@ -400,6 +445,8 @@ class MergeApp(tk.Tk):
                 event = self.events.get_nowait()
                 if event[0] == "log":
                     self._write_log(event[1])
+                elif event[0] == "failure":
+                    self._register_failure(event[1])
                 elif event[0] == "progress":
                     self.progress.configure(maximum=event[2], value=event[1])
                     self.state_text.set(f"병합 진행 {event[1]}/{event[2]}")
@@ -417,7 +464,8 @@ class MergeApp(tk.Tk):
                                   "\n변경된 파일명은 작업 기록에서 확인할 수 있습니다.")
                     if failed:
                         self._show_log()
-                        messagebox.showwarning("병합 종료", self.state_text.get() + notice + "\n작업 기록을 확인하세요.")
+                        messagebox.showwarning("병합 실패 원인 안내", self.state_text.get() + notice
+                                               + self._failure_dialog_text())
                     else:
                         messagebox.showinfo("병합 종료", self.state_text.get() + notice + "\n결과는 '병합결과' 폴더에 저장했습니다.")
         except queue.Empty:
