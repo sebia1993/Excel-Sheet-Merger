@@ -1,0 +1,67 @@
+name: Windows 11 Python EXE 빌드 및 릴리즈
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app.py'
+      - 'src/**'
+      - 'tests/**'
+      - 'requirements-build.txt'
+      - 'README.md'
+      - 'RELEASE_NOTES.md'
+      - '.github/workflows/windows-exe.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+
+      - name: Install Windows build dependencies
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build standalone Windows EXE
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name ExcelSheetMerger --paths src --collect-submodules win32com --hidden-import win32timezone --hidden-import pythoncom --hidden-import pywintypes app.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path 'dist/ExcelSheetMerger.exe')) { throw 'EXE not found' }
+          $exe = [System.IO.File]::ReadAllBytes('dist/ExcelSheetMerger.exe')
+          if ($exe.Length -lt 100000 -or $exe[0] -ne 77 -or $exe[1] -ne 90) { throw 'Invalid Windows PE executable' }
+          $hash = (Get-FileHash 'dist/ExcelSheetMerger.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ExcelSheetMerger.exe" | Set-Content -Path 'dist/SHA256SUMS.txt' -Encoding ascii
+
+      - name: Publish EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ExcelSheetMerger-Windows11-x64
+          path: |
+            dist/ExcelSheetMerger.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish versioned GitHub Release (main only)
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v1.0.$env:GITHUB_RUN_NUMBER"
+          gh release create $tag 'dist/ExcelSheetMerger.exe' 'dist/SHA256SUMS.txt' --target $env:GITHUB_SHA --title "Excel Sheet Merger $tag" --notes-file 'RELEASE_NOTES.md' --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
