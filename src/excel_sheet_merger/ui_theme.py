@@ -79,4 +79,34 @@ def configure_theme(root) -> ttk.Style:
     style.configure("Office.Treeview.Heading", background=c["surface_subtle"], foreground=c["text"], font=(FONT, 9, "bold"), padding=(8, 9), relief="flat")
     style.map("Office.Treeview", background=[("selected", "#DBEDE5")], foreground=[("selected", c["text"])])
     style.configure("Office.Horizontal.TProgressbar", troughcolor=c["surface_subtle"], background=c["primary"], borderwidth=0, thickness=8)
+    # ttkbootstrap 2.2.6's scrollbar thumb uses a Tk field element whose
+    # focuscolor must be valid even with focuswidth=0. Without it the first
+    # render raises a Tcl background error outside normal Python callbacks.
+    # A color-only default preserves the existing thumb geometry/appearance.
+    style.configure("Vertical.TScrollbar", focuscolor=c["primary"])
+    # Bind to the actual root, not global Tk.destroy. Toplevel bindings also
+    # receive child-destroy events: only release at this root's own teardown.
+    root.bind("<Destroy>",
+              lambda event: release_theme(root) if event.widget is root else None,
+              add="+")
     return style
+
+
+def release_theme(root) -> None:
+    """Release only the Bootstrap caches owned by this root's interpreter.
+
+    MergeApp subclasses tk.Tk rather than ttkbootstrap.App, so it must perform
+    the same Style/Fonts teardown as the pinned App implementation. Never
+    invalidate a theme belonging to another still-live root.
+    """
+    style = getattr(root, "theme_style", None)
+    if style is None or getattr(style, "tk", None) is not root.tk:
+        return
+    try:
+        from ttkbootstrap import Style as BootstrapStyle
+        from ttkbootstrap.utils.fonts import Fonts
+    except ImportError:
+        return  # Native ttk fallback on offline non-Windows development hosts.
+    if BootstrapStyle.instance is style:
+        BootstrapStyle.instance = None
+        Fonts.reset()
