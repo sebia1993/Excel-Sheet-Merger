@@ -51,6 +51,29 @@ class GuiBehaviorTests(unittest.TestCase):
     def tearDown(self):
         self.app.destroy()
 
+    def test_ui_names_both_csv_and_excel_inputs(self):
+        self.assertIn('Excel', self.app.title())
+        self.assertIn('Excel', self.app.tree.heading('source')['text'])
+        # The UI must not mislabel all source inputs as CSV-only.
+        self.assertIn('Excel', self.app.state_text.get())
+
+    def test_mixed_input_preview_counts_files_not_only_csv(self):
+        from openpyxl import Workbook
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            (directory / 'A사업장_20261028_11시.csv').write_text('ID\n001\n',encoding='utf-8')
+            excel_path = directory / 'A사업장_20261028_14시.xlsx'
+            wb = Workbook()
+            wb.active['A1'] = 'test'
+            wb.save(excel_path)
+            wb.close()
+            self.app.folder.set(str(directory))
+            self.app._scan()
+            self.assertEqual(self.app.metrics['groups'].get(), '1')
+            self.assertIn('2개 파일', self.app.summary.get())
+            group_id = next(iter(self.app.group_map))
+            self.assertEqual(len(self.app.tree.get_children(group_id)), 2)
+
     def test_initial_layout_has_metrics_and_collapsed_log(self):
         # Catches removal of main preview, hidden buttons or default open logs.
         self.assertEqual(self.app.minsize(), (900, 640))

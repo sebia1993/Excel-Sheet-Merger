@@ -1,68 +1,66 @@
-# Excel Sheet Merger — CSV → XLSX 시간별 시트 자동 병합
+# Excel Sheet Merger — CSV·Excel → XLSX 시간별 시트 자동 병합
 
-Windows 11용 한국어 GUI 프로그램입니다. 같은 **사업장 + 날짜**의 여러 CSV 파일을 하나의 `.xlsx` 파일로 합치고, 각 CSV의 파일명에 있는 시간을 그대로 **시트 이름**으로 사용합니다.
+Windows 11용 미니멀 업무형(화이트·그린) 한국어 GUI 프로그램. 같은 사업장명과 날짜의 CSV·Excel 원본들을 시간순으로 분류하여 한 개의 XLSX 통합 문서로 병합합니다.
 
-**Python 설치도, Microsoft Excel 설치도 필요하지 않습니다.** 실행 파일은 Python/Tkinter, ttkbootstrap, openpyxl을 PyInstaller로 패키징합니다.
+**Python 설치가 필요하지 않습니다. Excel 설치가 필요하지 않습니다.** Windows x64 EXE로 제공됩니다.
 
-## v1.2 미니멀 업무형 화면
+## 다운로드
 
-화이트/그린 컬러의 Windows 11 업무 도구 스타일을 적용했습니다. 기존 CSV 파일 분류·XLSX 변환 엔진은 변경하지 않았습니다.
+최신 Windows EXE:
+https://github.com/sebia1993/Excel-Sheet-Merger/releases/latest/download/ExcelSheetMerger.exe
 
-- 상단: **폴더 선택 → 파일 분석**. 선택하면 기존처럼 즉시 분석합니다.
-- 요약 카드: **검색 파일 / 병합 그룹 / 단독 파일 / 제외 파일** 개수.
-- 가운데: 넓은 계층형 **미리보기 표**. 하위 시트를 선택해도 해당 **그룹 전체**가 병합됩니다.
-- 하단: **전체 그룹 병합**(녹색 주 버튼), **선택 그룹 병합**, **결과 폴더 열기** 및 진행률.
-- **작업 기록 보기**는 기본으로 접혀 있습니다. 오류가 발생하면 자동으로 펼쳐집니다.
-- 앱은 한국어 UI이고, 기존 결과 덮어쓰기 방지, 원본 보존, CSV 텍스트 값 보존 규칙은 같습니다.
+릴리즈 페이지:
+https://github.com/sebia1993/Excel-Sheet-Merger/releases/latest
 
-UI는 [ttkbootstrap](https://github.com/israel-dryer/ttkbootstrap)(MIT)의 기존 ttk 스타일 확장을 이용합니다. 실제 사용자는 별도 테마나 라이브러리를 설치하지 않아도 됩니다. Windows의 접근성 배율(100~150%) 및 실제 창 크기는 사용 PC에서 확인해 주세요.
+## 사용 방법
 
-## 병합 결과 예시
+1. EXE 실행 후 CSV·Excel 파일이 들어 있는 폴더를 선택.
+2. 파일 분석에서 사업장/날짜별 그룹 및 시간별 시트 구성 미리보기.
+3. 전체 그룹 병합 또는 선택 그룹 병합 클릭.
+4. 원본 폴더 안 병합결과 폴더에서 XLSX 파일과 작업 로그 확인.
 
-| 원본 CSV (쉼표로 구분된 값) | 결과 파일 | 시트 이름 |
-| --- | --- | --- |
-| `A사업장_20261028_11시.csv` | `A사업장_20261028.xlsx` | `11시` |
-| `A사업장_20261028_14시.csv` | `A사업장_20261028.xlsx` | `14시` |
-| `A사업장_20261028_17시.csv` | `A사업장_20261028.xlsx` | `17시` |
+## 예제
 
-각 시트에는 해당 CSV 파일의 전체 행과 열을 담습니다. 출력 폴더는 선택한 CSV 폴더 아래의 `병합결과`입니다. B사업장 또는 날짜가 다른 데이터는 다른 통합문서로 분류됩니다.
+원본 A사업장_20261028_11시.csv → 시트 11시
+원본 A사업장_20261028_14시.xlsx → 시트 14시
+원본 A사업장_20261028_17시.xls → 시트 17시
 
-## EXE 사용 방법
+최종 통합 문서: A사업장_20261028.xlsx (시트 11시, 14시, 17시)
 
-1. [최신 Windows EXE 다운로드](https://github.com/sebia1993/Excel-Sheet-Merger/releases/latest/download/ExcelSheetMerger.exe) → **Assets**에서 `ExcelSheetMerger.exe`를 받습니다.
-2. Windows 11에서 실행 후 **폴더 선택** → CSV 파일이 담긴 폴더 지정.
-3. **파일 분석**으로 그룹, 결과 파일명, `11시` / `14시` / `17시` 시트명, 제외 사유를 미리 확인합니다.
-4. **전체 그룹 병합** 또는 **선택 그룹 병합**을 클릭합니다.
-5. `병합결과` 폴더에서 `.xlsx` 파일과 UTF-8 작업 기록을 확인합니다.
+CSV끼리, Excel끼리, CSV+Excel 혼합 모두 같은 기준으로 묶습니다. 같은 시각의 서로 다른 파일은 11시, 11시 (2)로 구분합니다. 파일이 한 개뿐인 그룹은 병합 보류합니다.
 
-## 지원 형식과 제한 사항
+## 지원 원본
 
-- 원본 파일 형식은 **`.csv`만 지원**합니다. `.xlsx`, `.xls`, `.xlsm`, `.xlsb`는 병합 대상에서 제외합니다.
-- 날짜: `20261028`, `2026-10-28`, `2026_10_28`, `2026.10.28`.
-- 시간: `11시`, `09시30분`, `14-30`, `1430`, `오전9시`, `오후2시` 등.
-- 파일명에서 날짜 **하나**와 시간 **하나**를 인식할 수 있어야 합니다. `최종`, `수정` 같은 접미사는 사업장 구분에 포함됩니다. 예기치 않은 자동 병합을 방지하는 정책입니다.
-- 사업장명과 날짜가 동일한 파일을 묶고, 시간을 오름차순 정렬합니다. 같은 시간의 파일이 두 개면 `11시`, `11시 (2)`로 지정합니다.
-- 한 그룹에 **2개 이상** 파일이 있어야 병합하며, 1개뿐인 파일은 미리보기에 별도 표시합니다.
-- CSV 인코딩은 **UTF-8(BOM 유무), CP949/EUC-KR, UTF-16(BOM)** 등을 읽습니다. 쉼표 구분, 쌍따옴표 안의 쉼표/줄바꿈, `sep=,` 지시행을 지원합니다. 손상되거나 다른 구분자를 사용하는 CSV는 제외/오류 처리될 수 있습니다.
-- CSV 셀 내부의 CRLF/CR 줄바꿈은 Excel에서 한 번만 줄바꿈되도록 LF로 정규화합니다. 그 외 CSV 값은 **전부 텍스트로 저장**하여 `00123`, IP/MAC 주소, `=SUM(...)` 같은 값이 변환·실행되지 않도록 합니다. 계산이 필요한 숫자 열은 Excel에서 후속 변환하세요.
-- Excel 한계: 시트당 최대 **1,048,576행 × 16,384열**, 셀당 최대 **32,767 UTF-16 코드단위**. 한도 초과 시 해당 그룹을 실패 처리합니다.
-- 원본 CSV는 절대 변경하지 않습니다. 같은 결과 파일명이 이미 있으면 **덮어쓰지 않고 건너뜁니다**. 임시 파일 작성 후 최종 파일명으로 확정하며 실패 시 정리합니다.
-- Excel 설치가 필요하지 않습니다. 단, 결과 파일을 열어 보려면 Excel 또는 다른 `.xlsx` 뷰어가 필요합니다.
+- .csv: UTF-8(BOM 포함), CP949, UTF-16(BOM) 및 쉼표·인용부호·줄바꿈 처리. 모든 셀을 텍스트로 저장하여 00123, IP/MAC, =SUM() 같은 문자열을 보존.
+- .xlsx: 숫자·날짜·문자·수식·셀 스타일·병합 셀·행/열 크기·틀고정을 가능한 범위에서 복사.
+- .xlsm: .xlsx와 동일하지만 VBA 매크로는 결과 XLSX에 포함되지 않음.
+- .xls: xlrd 라이브러리로 데이터·날짜·불리언 중심으로 변환. 원본 셀 서식은 미보존.
+- .xlsb 등 미지원 형식은 제외 사유 표시.
 
-## 자동 EXE 빌드 및 Release
+**Excel 원본은 파일 하나당 정확히 시트 1개**여야 합니다. 여러 시트가 있는 Excel이나 손상된 파일이 있으면 해당 그룹 병합을 실패 처리하고 작업 기록에 원인을 남깁니다. 다른 정상 그룹은 계속 처리합니다.
 
-`main` 브랜치에 변경이 푸시되면 `.github/workflows/windows-exe.yml`이 Windows 러너에서 **테스트 → PyInstaller EXE 빌드 → PE 형식 검사 → SHA-256 생성 → GitHub Release 업로드**를 수행합니다. 성공 이후 [Releases](https://github.com/sebia1993/Excel-Sheet-Merger/releases/latest)에서 버전별 다운로드를 확인할 수 있습니다. 미니멀 업무형 버전은 `v1.2.<워크플로 실행 번호>` 태그로 배포됩니다.
+## 파일명 규칙과 주의사항
 
-개발 PC에 Python 3.12가 설치되어 있다면 `build_windows.bat`로 로컬 빌드할 수 있습니다. 사용자 PC에는 Python을 설치할 필요가 없습니다.
+파일명에서 날짜 1개와 시간 1개 인식 필수. 날짜 20261028, 2026-10-28, 2026_10_28, 2026.10.28; 시간 11시, 09시30분, 14-30, 1430, 오후2시 등을 지원합니다. 최종/수정 같은 추가 문구는 사업장 구분에 포함되며, 임의의 유사도 기준으로 합치지 않습니다.
 
-## 개발과 테스트
+원본 CSV와 Excel은 수정하지 않습니다. 이미 같은 결과 파일이 있으면 덮어쓰지 않고 건너뜁니다. 오류가 나면 불완전한 임시 파일을 삭제합니다. Excel 시트 최대 1,048,576행 × 16,384열.
 
-- Python 3.12+, `openpyxl>=3.1.5`, Tkinter, `ttkbootstrap==2.2.6`, PyInstaller.
-- `python -m pip install -r requirements-build.txt` (개발/빌드 PC만)
-- `python -m unittest discover -s tests -v`
-- `python app.py`
-- 주요 파일: `src/excel_sheet_merger/classify.py`(파일명 분류), `merge.py`(CSV 파싱 및 XLSX 생성), `gui.py`(한국어 GUI), `ui_theme.py`(UI 디자인 토큰).
+일반 Excel의 차트·이미지·피벗·조건부 서식·외부 링크·매크로 및 수식 재계산/캐시의 완전한 복제는 보장하지 않습니다. 원본 시트명을 참조하는 수식은 새 시트명과 충돌할 수 있으므로 결과를 확인하세요. Excel 포함 그룹은 메모리 사용량이 증가합니다. 회사 보안 정책상 코드 미서명 EXE 실행이 제한될 수 있습니다.
 
-## 실제 환경 검증 범위
+## 개발과 자동 빌드
 
-CSV → XLSX 변환은 자동 테스트로 검증합니다. GitHub Actions에서 Windows용 EXE 패키징도 확인할 수 있습니다. **실제 회사 PC/VDI 정책, 백신 탐지, 특수 CSV 인코딩 및 대용량 처리**는 실사용 환경에서 추가 검증이 필요합니다. 코드 서명되지 않은 EXE는 회사 보안정책상 실행 제한될 수 있으니 정책을 준수하세요. Linux에서는 ttkbootstrap 설치가 불가능할 때 개발용 `clam` 스타일로 UI 스모크 테스트를 할 수 있지만, **Windows 릴리즈는 ttkbootstrap을 반드시 설치하고 포함**합니다.
+Python 3.12, openpyxl, xlrd, Tkinter, ttkbootstrap 및 PyInstaller를 사용합니다.
+
+개발/테스트 명령:
+python -m pip install -r requirements-build.txt
+python -m unittest discover -s tests -v
+python app.py
+
+Windows 빌드: build_windows.bat.
+GitHub Actions: .github/workflows/windows-exe.yml — 테스트 → PyInstaller EXE → SHA256SUMS → 버전별 GitHub Release 자동 게시.
+혼합 Excel 입력 릴리즈 태그는 v1.3.<GitHub Actions 실행 번호> 입니다.
+
+핵심 파일: src/excel_sheet_merger/classify.py (분류), merge.py (병합), gui.py (화면), ui_theme.py (디자인).
+
+참고 UI: https://github.com/israel-dryer/ttkbootstrap (MIT).
+실제 구형 XLS 파일 및 회사 PC/VDI에서의 호환성은 추가 실사용 검증이 필요합니다.

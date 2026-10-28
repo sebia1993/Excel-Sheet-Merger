@@ -1,12 +1,13 @@
-"""CSV 파일을 인코딩을 보존해 읽고 시간별 시트로 XLSX에 저장한다.
+"""CSV와 Excel 파일의 데이터를 시간별 시트로 병합해 XLSX로 만든다.
 
-CSV는 셀 서식과 자료형을 정의하지 않으므로, 값의 변형을 막기 위해 모두
-텍스트로 저장한다. Excel 데스크톱 프로그램이나 COM은 사용하지 않는다.
+CSV의 원본 텍스트 보존 규칙은 그대로 유지한다. 일반 Excel은 셀 자료형과
+대표적인 셀 스타일·병합·행/열 크기를 복사한다. Excel COM은 사용하지 않는다.
 """
 
 from __future__ import annotations
 
 import codecs
+from copy import copy
 import csv
 import os
 import re
@@ -16,7 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Iterator
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.cell import WriteOnlyCell
 
 from .classify import MergeGroup
@@ -89,30 +90,139 @@ def text_cell(ws, value: str):
     return cell
 
 
+def _append_csv(ws, path: Path) -> None:
+    """The existing CSV path remains text-only (including formula-looking text)."""
+    row_count = 0
+    for row in csv_rows(path):
+        row_count += 1
+        if row_count > MAX_ROWS:
+            raise ValueError(f"CSV 행 수가 Excel 한도를 넘었습니다: {path.name}")
+        if len(row) > MAX_COLUMNS:
+            raise ValueError(f"CSV 열 수가 Excel 한도를 넘었습니다: {path.name}")
+        ws.append([text_cell(ws, value) for value in row])
+    if not row_count:
+        raise ValueError(f"비어 있는 CSV 파일입니다: {path.name}")
+
+
+def _append_openpyxl(ws, path: Path) -> None:
+    """Copy the sole worksheet's ordinary cells and layout without executing Excel."""
+    try:
+        source_wb = load_workbook(path, read_only=False, data_only=False, keep_links=False)
+    except Exception as exc:
+        raise ValueError(f"Excel 파일을 열 수 없습니다 ({path.name}): {exc}") from exc
+    try:
+        if len(source_wb.worksheets) != 1:
+            raise ValueError(f"Excel 원본의 시트는 1개여야 합니다: {path.name} (현재 {len(source_wb.worksheets)}개)")
+        source = source_wb.worksheets[0]
+        if source.max_row > MAX_ROWS or source.max_column > MAX_COLUMNS:
+            raise ValueError(f"Excel 행/열 한도를 초과했습니다: {path.name}")
+        has_data = False
+        for row in source.iter_rows():
+            for cell in row:
+                if cell.value is None and not cell.has_style:
+                    continue
+                if cell.value is not None:
+                    has_data = True
+                target = ws.cell(row=cell.row, column=cell.column, value=cell.value)
+                # '=' as text stays text; real formulas remain formulas.
+                if cell.data_type == 's' and isinstance(cell.value, str):
+                    target.data_type = 's'
+                if cell.has_style:
+                    target.font = copy(cell.font)
+                    target.fill = copy(cell.fill)
+                    target.border = copy(cell.border)
+                    target.alignment = copy(cell.alignment)
+                    target.number_format = cell.number_format
+                    target.protection = copy(cell.protection)
+                if cell.hyperlink is not None:
+                    target.hyperlink = copy(cell.hyperlink)
+                if cell.comment is not None:
+                    target.comment = copy(cell.comment)
+        if not has_data:
+            raise ValueError(f"비어 있는 Excel 시트입니다: {path.name}")
+        for key, dim in source.column_dimensions.items():
+            ws.column_dimensions[key] = copy(dim)
+        for key, dim in source.row_dimensions.items():
+            ws.row_dimensions[key] = copy(dim)
+        for merged in source.merged_cells.ranges:
+            ws.merge_cells(str(merged))
+        ws.freeze_panes = source.freeze_panes
+        ws.sheet_view.showGridLines = source.sheet_view.showGridLines
+        if source.auto_filter.ref:
+            ws.auto_filter.ref = source.auto_filter.ref
+    finally:
+        source_wb.close()
+
+
+def _append_xls(ws, path: Path) -> None:
+    """Read legacy BIFF .xls values; original .xls cell formatting is not retained."""
+    try:
+        import xlrd
+    except ImportError as exc:
+        raise RuntimeError("구형 XLS 읽기 모듈(xlrd)이 프로그램에 포함되지 않았습니다") from exc
+    try:
+        book = xlrd.open_workbook(str(path), on_demand=True)
+    except Exception as exc:
+        raise ValueError(f"구형 XLS 파일을 열 수 없습니다 ({path.name}): {exc}") from exc
+    try:
+        if book.nsheets != 1:
+            raise ValueError(f"Excel 원본의 시트는 1개여야 합니다: {path.name} (현재 {book.nsheets}개)")
+        sheet = book.sheet_by_index(0)
+        if sheet.nrows == 0 or sheet.ncols == 0:
+            raise ValueError(f"비어 있는 Excel 시트입니다: {path.name}")
+        if sheet.nrows > MAX_ROWS or sheet.ncols > MAX_COLUMNS:
+            raise ValueError(f"Excel 행/열 한도를 초과했습니다: {path.name}")
+        for r in range(sheet.nrows):
+            for c in range(sheet.ncols):
+                original = sheet.cell(r, c)
+                typ, value = original.ctype, original.value
+                if typ in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+                    continue
+                if typ == xlrd.XL_CELL_DATE:
+                    value = xlrd.xldate_as_datetime(value, book.datemode)
+                elif typ == xlrd.XL_CELL_BOOLEAN:
+                    value = bool(value)
+                elif typ == xlrd.XL_CELL_ERROR:
+                    value = xlrd.error_text_from_code.get(value, '#N/A')
+                target = ws.cell(row=r + 1, column=c + 1, value=value)
+                if typ == xlrd.XL_CELL_TEXT and isinstance(value, str):
+                    # Legacy Excel formula *results* may be stored as text.
+                    target.data_type = 's'
+                elif typ == xlrd.XL_CELL_ERROR:
+                    target.data_type = 'e'
+                elif typ == xlrd.XL_CELL_DATE:
+                    target.number_format = 'yyyy-mm-dd hh:mm:ss'
+    finally:
+        book.release_resources()
+
+
 def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
     """그룹당 한 번만 생성; 읽기 실패 시 최종 파일을 만들지 않는다."""
     if len(group.inputs) < 2:
-        raise ValueError("병합 대상 CSV가 2개 미만입니다")
+        raise ValueError("병합 대상 파일이 2개 미만입니다")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     final_path = output_dir / group.output_name
     if final_path.exists():
         return MergeResult(final_path, MergeStatus.EXISTS)
     tmp_path = output_dir / f"_병합중_{uuid.uuid4().hex}.xlsx"
-    wb = Workbook(write_only=True)
+    # CSV-only keeps the original memory-efficient streaming writer.
+    csv_only = all(item.path.suffix.casefold() == '.csv' for item in group.inputs)
+    wb = Workbook(write_only=csv_only)
+    if not csv_only:
+        wb.remove(wb.active)  # no default "Sheet" in the output
     try:
         for item in group.inputs:
             ws = wb.create_sheet(title=item.sheet_name)
-            row_count = 0
-            for row in csv_rows(item.path):
-                row_count += 1
-                if row_count > MAX_ROWS:
-                    raise ValueError(f"CSV 행 수가 Excel 한도를 넘었습니다: {item.file_name}")
-                if len(row) > MAX_COLUMNS:
-                    raise ValueError(f"CSV 열 수가 Excel 한도를 넘었습니다: {item.file_name}")
-                ws.append([text_cell(ws, value) for value in row])
-            if not row_count:
-                raise ValueError(f"비어 있는 CSV 파일입니다: {item.file_name}")
+            extension = item.path.suffix.casefold()
+            if extension == '.csv':
+                _append_csv(ws, item.path)
+            elif extension in ('.xlsx', '.xlsm'):
+                _append_openpyxl(ws, item.path)
+            elif extension == '.xls':
+                _append_xls(ws, item.path)
+            else:
+                raise ValueError(f"지원하지 않는 Excel 형식입니다: {item.file_name}")
         wb.save(tmp_path)
         # Windows에서는 os.rename이 기존 파일을 덮어쓰지 않음.
         # POSIX에서는 atomic link를 사용해 no-clobber 동작을 보장.
@@ -130,12 +240,13 @@ def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
     except Exception:
         # write_only 워크시트의 열린 XML 제너레이터를 닫지 않으면,
         # 실패 후 GC 단계에서 lxml 예외가 stderr에 출력된다.
-        for ws in wb.worksheets:
-            if not ws.closed:
-                try:
-                    ws.close()
-                except Exception:
-                    pass
+        if csv_only:
+            for ws in wb.worksheets:
+                if not ws.closed:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
         raise
     finally:
         wb.close()

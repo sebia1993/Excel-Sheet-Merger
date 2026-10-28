@@ -50,10 +50,25 @@ class ClassifyTests(unittest.TestCase):
             self.assertEqual(len(result.groups), 0)
             self.assertEqual(len(result.rejected), len(invalid))
 
-    def test_csv_suffix_case_insensitive_and_excel_is_excluded(self):
-        self.assertEqual(parse_filename(Path('A사업장_20261028_11시.CSV')).sheet_name, '11시')
-        with self.assertRaisesRegex(ValueError, 'CSV'):
-            parse_filename(Path('A사업장_20261028_11시.xlsx'))
+    def test_csv_and_excel_suffixes_case_insensitive(self):
+        for ext in (".csv", ".CSV", ".xlsx", ".XLSX", ".xlsm", ".xls"):
+            with self.subTest(ext=ext):
+                self.assertEqual(parse_filename(Path(f"A사업장_20261028_11시{ext}")).sheet_name, "11시")
+        with self.assertRaisesRegex(ValueError, "지원하지"):
+            parse_filename(Path("A사업장_20261028_11시.xlsb"))
+
+    def test_mixed_csv_and_excel_are_grouped_and_sorted_by_time(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder)
+            for filename in ("A사업장_20261028_17시.xlsx", "A사업장_20261028_11시.csv",
+                             "A사업장_20261028_14시.xls", "B사업장_20261028_11시.xlsm"):
+                (source / filename).touch()
+            result = scan_folder(source)
+            self.assertEqual(len(result.groups), 1)
+            self.assertEqual([x.sheet_name for x in result.groups[0].inputs], ["11시", "14시", "17시"])
+            self.assertEqual([x.path.suffix for x in result.groups[0].inputs], [".csv", ".xls", ".xlsx"])
+            self.assertEqual(len(result.singles), 1)
+            self.assertEqual(len(result.rejected), 0)
 
     def test_12_hour_period_conversion(self):
         self.assertEqual((parse_filename(Path('사업장_20261028_오후2시.csv')).hour, parse_filename(Path('사업장_20261028_오전12시.csv')).hour), (14, 0))
@@ -65,8 +80,8 @@ class ClassifyTests(unittest.TestCase):
             for s in ['~$A사업장_20261028_11시.csv','A사업장_20261028_오후2시.csv','20261028_A사업장_09시30분.csv','A사업장_20261028_15시.xlsm']:
                 (p / s).touch()
             r = scan_folder(p)
-            self.assertEqual([i.sheet_name for i in r.groups[0].inputs], ['09시30분', '14시'])
-            self.assertEqual(len(r.rejected), 2)
+            self.assertEqual([i.sheet_name for i in r.groups[0].inputs], ['09시30분', '14시', '15시'])
+            self.assertEqual(len(r.rejected), 1)
 
     def test_excel_sheet_name_utf16_and_casefold(self):
         names = unique_sheet_names(['a'*40,'a'*40,'B'*30,'b'*30,'시트/1'])

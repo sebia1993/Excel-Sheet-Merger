@@ -13,7 +13,8 @@ TIME_PATTERNS = (
     re.compile(r"(?:[01]?\d|2[0-3])[-_:][0-5]\d"),
     re.compile(r"(?:[01]\d|2[0-3])[0-5]\d"),
 )
-SOURCE_SUFFIXES = {".csv", ".xlsx", ".xls", ".xlsm", ".xlsb"}
+SUPPORTED_INPUT_SUFFIXES = {".csv", ".xlsx", ".xlsm", ".xls"}
+SOURCE_SUFFIXES = SUPPORTED_INPUT_SUFFIXES | {".xlsb"}
 INVALID_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -137,8 +138,8 @@ def parse_filename(path: Path) -> SheetInput:
     name = path.name
     if name.startswith("~$"):
         raise ValueError("Excel 임시 잠금 파일")
-    if path.suffix.casefold() != ".csv":
-        raise ValueError("지원하지 않는 확장자 (CSV만 가능)")
+    if path.suffix.casefold() not in SUPPORTED_INPUT_SUFFIXES:
+        raise ValueError("지원하지 않는 확장자 (CSV, XLSX, XLSM, XLS만 가능)")
     stem = path.stem
     dates = list(DATE_RE.finditer(stem))
     if len(dates) != 1:

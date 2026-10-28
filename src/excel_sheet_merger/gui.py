@@ -1,4 +1,4 @@
-"""Windows 11 Korean CSV → XLSX GUI; theme-only redesign, unchanged engine."""
+"""Windows 11 Korean CSV/Excel → XLSX GUI; theme-only redesign, unchanged engine."""
 
 from __future__ import annotations
 
@@ -30,13 +30,13 @@ def summary_metrics(report: ScanReport) -> tuple[str, str, str, str]:
 class MergeApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Excel Sheet Merger  |  CSV → XLSX")
+        self.title("Excel Sheet Merger  |  CSV·Excel → XLSX")
         self.geometry("1100x760")
         self.minsize(900, 640)
         self.configure(bg=COLORS["background"])
         self.folder = tk.StringVar(value="")
         self.summary = tk.StringVar(value="폴더를 선택하면 병합 결과와 시간별 시트를 미리 확인할 수 있습니다.")
-        self.state_text = tk.StringVar(value="원본 CSV가 있는 폴더를 선택하세요.")
+        self.state_text = tk.StringVar(value="원본 CSV·Excel 파일이 있는 폴더를 선택하세요.")
         self.metrics = {key: tk.StringVar(value="0") for key in ("checked", "groups", "singles", "rejected")}
         self.report: ScanReport | None = None
         self.group_map: dict[str, MergeGroup] = {}
@@ -69,7 +69,7 @@ class MergeApp(tk.Tk):
         self._log_card(root)
         self._preview_card(root)
         self._set_enabled(False)
-        self._write_log("안내: 원본 CSV를 변경하지 않고 시간별 시트가 있는 XLSX로 변환합니다. 기존 결과는 건너뜁니다.")
+        self._write_log("안내: 원본 CSV·Excel을 변경하지 않고 시간별 시트가 있는 XLSX로 병합합니다. 기존 결과는 건너뜁니다.")
 
     def _header(self, root: ttk.Frame) -> None:
         header = ttk.Frame(root, style="Office.Page.TFrame")
@@ -84,11 +84,11 @@ class MergeApp(tk.Tk):
         label_group = ttk.Frame(header, style="Office.Page.TFrame")
         label_group.pack(side="left", fill="x", expand=True)
         ttk.Label(label_group, text="Excel Sheet Merger", style="Office.Title.TLabel").pack(anchor="w")
-        ttk.Label(label_group, text="CSV 파일을 시간별 시트로 자동 병합 · Excel 설치 불필요", style="Office.Subtitle.TLabel").pack(anchor="w")
+        ttk.Label(label_group, text="CSV·Excel 파일을 시간별 시트로 자동 병합 · Excel 설치 불필요", style="Office.Subtitle.TLabel").pack(anchor="w")
         # Label pill has its own background independent of page theme.
         pill = ttk.Frame(header, style="Office.Subtle.TFrame")
         pill.pack(side="right")
-        ttk.Label(pill, text="CSV  →  XLSX", style="Office.Pill.TLabel").pack()
+        ttk.Label(pill, text="CSV·Excel  →  XLSX", style="Office.Pill.TLabel").pack()
 
     def _folder_card(self, root: ttk.Frame) -> None:
         frame, card = self._card(root, 10)
@@ -133,7 +133,7 @@ class MergeApp(tk.Tk):
         self.tree = ttk.Treeview(table_container, style="Office.Treeview", columns=("sheet", "source"), show="tree headings", selectmode="extended")
         self.tree.heading("#0", text="병합 결과 파일 / 대상")
         self.tree.heading("sheet", text="시트 이름 / 개수")
-        self.tree.heading("source", text="원본 CSV / 제외 사유")
+        self.tree.heading("source", text="원본 CSV·Excel / 제외 사유")
         self.tree.column("#0", width=355, minwidth=230)
         self.tree.column("sheet", width=150, minwidth=105, anchor="center", stretch=False)
         self.tree.column("source", width=430, minwidth=270)
@@ -207,7 +207,7 @@ class MergeApp(tk.Tk):
         self.log.configure(state="disabled")
 
     def _pick_folder(self) -> None:
-        result = filedialog.askdirectory(title="원본 CSV 파일이 있는 폴더 선택", mustexist=True)
+        result = filedialog.askdirectory(title="원본 CSV·Excel 파일이 있는 폴더 선택", mustexist=True)
         if result:
             self.folder.set(result)
             self._scan()
@@ -215,7 +215,7 @@ class MergeApp(tk.Tk):
     def _scan(self) -> None:
         location = self.folder.get().strip()
         if not location:
-            messagebox.showinfo("폴더 선택", "먼저 원본 CSV 폴더를 선택해 주세요.")
+            messagebox.showinfo("폴더 선택", "먼저 원본 CSV·Excel 폴더를 선택해 주세요.")
             return
         try:
             report = scan_folder(Path(location))
@@ -236,7 +236,7 @@ class MergeApp(tk.Tk):
                                  values=(item.sheet_name, item.file_name))
         if report.singles:
             sid = self.tree.insert("", "end", text="단독 파일 · 병합 보류",
-                                   values=(f"{len(report.singles)}개", "CSV 1개인 그룹은 병합하지 않음"), tags=("single",), open=True)
+                                   values=(f"{len(report.singles)}개", "파일 1개인 그룹은 병합하지 않음"), tags=("single",), open=True)
             for group in report.singles:
                 self.tree.insert(sid, "end", text=group.output_name, values=("대상 1개", group.inputs[0].file_name), tags=("single",))
         if report.rejected:
@@ -246,7 +246,7 @@ class MergeApp(tk.Tk):
                 self.tree.insert(xid, "end", text=rejected.name, values=("제외", rejected.reason), tags=("rejected",))
         for key, value in zip(("checked", "groups", "singles", "rejected"), summary_metrics(report)):
             self.metrics[key].set(value)
-        self.summary.set(f"병합 대상 {sum(len(g.inputs) for g in report.groups)}개 CSV · 결과 {len(report.groups)}개")
+        self.summary.set(f"병합 대상 {sum(len(g.inputs) for g in report.groups)}개 파일 · 결과 {len(report.groups)}개")
         self.progress.configure(maximum=1, value=0)
         self._set_enabled(bool(report.groups))
         self.state_text.set("미리보기 준비 완료" if report.groups else "병합할 그룹 없음 · 단독/제외 파일 확인")
