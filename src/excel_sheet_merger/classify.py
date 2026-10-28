@@ -1,4 +1,4 @@
-"""파일명을 기반으로 Excel 시트 병합 대상을 분류한다 (Excel 비의존)."""
+"""파일명을 기반으로 CSV → XLSX 시트 병합 대상을 분류한다."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ TIME_PATTERNS = (
     re.compile(r"(?:[01]?\d|2[0-3])[-_:][0-5]\d"),
     re.compile(r"(?:[01]\d|2[0-3])[0-5]\d"),
 )
-EXCEL_SUFFIXES = {".xlsx", ".xls", ".xlsm", ".xlsb"}
+SOURCE_SUFFIXES = {".csv", ".xlsx", ".xls", ".xlsm", ".xlsb"}
 INVALID_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -137,8 +137,8 @@ def parse_filename(path: Path) -> SheetInput:
     name = path.name
     if name.startswith("~$"):
         raise ValueError("Excel 임시 잠금 파일")
-    if path.suffix.casefold() != ".xlsx":
-        raise ValueError("지원하지 않는 확장자 (.xlsx만 가능)")
+    if path.suffix.casefold() != ".csv":
+        raise ValueError("지원하지 않는 확장자 (CSV만 가능)")
     stem = path.stem
     dates = list(DATE_RE.finditer(stem))
     if len(dates) != 1:
@@ -173,7 +173,7 @@ def scan_folder(folder: Path) -> ScanReport:
     folder = Path(folder)
     if not folder.is_dir():
         raise ValueError(f"존재하지 않는 폴더: {folder}")
-    candidates = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.casefold() in EXCEL_SUFFIXES), key=lambda p: p.name.casefold())
+    candidates = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.casefold() in SOURCE_SUFFIXES), key=lambda p: p.name.casefold())
     groups_by_key: dict[tuple[str, str], list[SheetInput]] = {}
     rejected: list[RejectedFile] = []
     for path in candidates:

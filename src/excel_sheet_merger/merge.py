@@ -1,16 +1,30 @@
-"""Microsoft Excel COM으로 시트를 복사해 임시 저장 후 최종 이름으로 확정."""
+"""CSV 파일을 인코딩을 보존해 읽고 시간별 시트로 XLSX에 저장한다.
+
+CSV는 셀 서식과 자료형을 정의하지 않으므로, 값의 변형을 막기 위해 모두
+텍스트로 저장한다. Excel 데스크톱 프로그램이나 COM은 사용하지 않는다.
+"""
 
 from __future__ import annotations
 
+import codecs
+import csv
 import os
+import re
 import uuid
-from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Iterator
+
+from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 
 from .classify import MergeGroup
+
+MAX_ROWS = 1_048_576
+MAX_COLUMNS = 16_384
+MAX_CELL_UTF16_UNITS = 32_767
+_ILLEGAL_EXCEL_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 class MergeStatus(str, Enum):
@@ -24,101 +38,107 @@ class MergeResult:
     status: MergeStatus
 
 
-def merge_group(group: MergeGroup, output_dir: Path, excel: Any) -> MergeResult:
-    """한 그룹만 처리한다. 성공할 때만 최종 경로가 생성된다.
+def detect_csv_encoding(path: Path) -> str:
+    """UTF BOM을 우선하고, 전체 파일의 UTF-8 유효성을 검사한 후 CP949로 대체.
 
-    excel은 Excel.Application COM 객체 또는 같은 인터페이스의 테스트 대역.
+    첫 KB가 영어로만 된 파일이더라도 뒤쪽의 CP949 한글을 놓치지 않는다.
     """
+    with path.open("rb") as file:
+        bom = file.read(4)
+        if bom.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+            raise ValueError(f"UTF-32 CSV는 지원하지 않습니다: {path.name}")
+        if bom.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+            return "utf-16"
+        if bom.startswith(codecs.BOM_UTF8):
+            return "utf-8-sig"
+        file.seek(0)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+        try:
+            for chunk in iter(lambda: file.read(65536), b""):
+                decoder.decode(chunk)
+            decoder.decode(b"", final=True)
+            return "utf-8"
+        except UnicodeDecodeError:
+            return "cp949"
+
+
+def csv_rows(path: Path) -> Iterator[list[str]]:
+    encoding = detect_csv_encoding(path)
+    try:
+        with path.open("r", encoding=encoding, newline="", errors="strict") as file:
+            reader = csv.reader(file, delimiter=",", strict=True)
+            for first, row in enumerate(reader):
+                # Microsoft Excel이 CSV 첫 행에 구분자를 명시한 파일을 지원한다.
+                if first == 0 and row in (["sep=", ""], ["sep=,"]):
+                    continue
+                yield row
+    except (UnicodeError, csv.Error) as exc:
+        raise ValueError(f"CSV 데이터 또는 인코딩 오류 ({path.name}): {exc}") from exc
+
+
+def text_cell(ws, value: str):
+    if _ILLEGAL_EXCEL_TEXT.search(value):
+        raise ValueError("Excel에서 사용할 수 없는 제어 문자가 있습니다")
+    if len(value.encode("utf-16-le")) // 2 > MAX_CELL_UTF16_UNITS:
+        raise ValueError("Excel 셀 최대 길이(32,767자)를 초과했습니다")
+    cell = WriteOnlyCell(ws, value=value)
+    # 문자열 '=...'을 수식으로 추론하지 않도록 명시적으로 Excel 텍스트로 고정.
+    cell.data_type = "s"
+    return cell
+
+
+def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
+    """그룹당 한 번만 생성; 읽기 실패 시 최종 파일을 만들지 않는다."""
     if len(group.inputs) < 2:
-        raise ValueError("병합 대상이 2개 미만인 그룹입니다")
+        raise ValueError("병합 대상 CSV가 2개 미만입니다")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     final_path = output_dir / group.output_name
     if final_path.exists():
         return MergeResult(final_path, MergeStatus.EXISTS)
     tmp_path = output_dir / f"_병합중_{uuid.uuid4().hex}.xlsx"
-    target = None
+    wb = Workbook(write_only=True)
     try:
-        target = excel.Workbooks.Add()
-        # Excel 설정에 따라 새 통합 문서의 기본 시트가 1~3개일 수 있다.
-        empty_sheets = [target.Sheets(i) for i in range(1, int(target.Sheets.Count) + 1)]
         for item in group.inputs:
-            source = None
+            ws = wb.create_sheet(title=item.sheet_name)
+            row_count = 0
+            for row in csv_rows(item.path):
+                row_count += 1
+                if row_count > MAX_ROWS:
+                    raise ValueError(f"CSV 행 수가 Excel 한도를 넘었습니다: {item.file_name}")
+                if len(row) > MAX_COLUMNS:
+                    raise ValueError(f"CSV 열 수가 Excel 한도를 넘었습니다: {item.file_name}")
+                ws.append([text_cell(ws, value) for value in row])
+            if not row_count:
+                raise ValueError(f"비어 있는 CSV 파일입니다: {item.file_name}")
+        wb.save(tmp_path)
+        # Windows에서는 os.rename이 기존 파일을 덮어쓰지 않음.
+        # POSIX에서는 atomic link를 사용해 no-clobber 동작을 보장.
+        if os.name == "nt":
             try:
-                source = excel.Workbooks.Open(
-                    Filename=str(item.path.resolve()),
-                    UpdateLinks=0,
-                    ReadOnly=True,
-                    IgnoreReadOnlyRecommended=True,
-                    AddToMru=False,
-                )
-                if int(source.Sheets.Count) != 1:
-                    raise ValueError(f"원본 시트 수가 1개가 아닙니다: {item.file_name}")
-                source.Sheets(1).Copy(After=target.Sheets(int(target.Sheets.Count)))
-                target.Sheets(int(target.Sheets.Count)).Name = item.sheet_name
-            finally:
-                if source is not None:
-                    source.Close(SaveChanges=False)
-        for initial in empty_sheets:
-            initial.Delete()
-        target.SaveAs(Filename=str(tmp_path.resolve()), FileFormat=51)  # xlOpenXMLWorkbook (.xlsx)
-        target.Close(SaveChanges=False)
-        target = None
-        if final_path.exists():
-            return MergeResult(final_path, MergeStatus.EXISTS)
-        # Windows의 os.rename은 이미 있는 목적지 파일을 덮어쓰지 않는다.
-        # 임시 파일과 목적지는 같은 폴더라 동일 볼륨이다.
-        try:
-            os.rename(tmp_path, final_path)
-        except FileExistsError:
-            return MergeResult(final_path, MergeStatus.EXISTS)
+                os.rename(tmp_path, final_path)
+            except FileExistsError:
+                return MergeResult(final_path, MergeStatus.EXISTS)
+        else:
+            try:
+                os.link(tmp_path, final_path)
+            except FileExistsError:
+                return MergeResult(final_path, MergeStatus.EXISTS)
         return MergeResult(final_path, MergeStatus.CREATED)
+    except Exception:
+        # write_only 워크시트의 열린 XML 제너레이터를 닫지 않으면,
+        # 실패 후 GC 단계에서 lxml 예외가 stderr에 출력된다.
+        for ws in wb.worksheets:
+            if not ws.closed:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+        raise
     finally:
-        if target is not None:
-            try:
-                target.Close(SaveChanges=False)
-            except Exception:
-                pass
+        wb.close()
         if tmp_path.exists():
             try:
                 tmp_path.unlink()
             except OSError:
                 pass
-
-
-@contextmanager
-def excel_session() -> Iterator[Any]:
-    """별도 Excel 프로세스를 생성, 매크로/링크를 비활성화하고 종료한다.
-
-    Tkinter 작업 스레드에서 호출하므로 COM STA를 스레드 내부에서 초기화한다.
-    """
-    if os.name != "nt":
-        raise RuntimeError("Excel 자동병합은 Microsoft Excel이 설치된 Windows에서만 실행할 수 있습니다")
-    try:
-        import pythoncom  # type: ignore[import-not-found]
-        import win32com.client  # type: ignore[import-not-found]
-    except ImportError as exc:
-        raise RuntimeError("Windows Excel 구성요소(pywin32)가 없습니다. EXE를 다시 빌드해야 합니다") from exc
-
-    pythoncom.CoInitialize()
-    app = None
-    try:
-        try:
-            app = win32com.client.DispatchEx("Excel.Application")
-        except Exception as exc:
-            raise RuntimeError("Microsoft Excel 데스크톱 프로그램을 시작할 수 없습니다") from exc
-        # 매크로 실행 차단이 실패하면 안전을 위해 아무 파일도 열지 않는다.
-        app.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
-        app.Visible = False
-        app.DisplayAlerts = False
-        app.ScreenUpdating = False
-        app.EnableEvents = False
-        app.AskToUpdateLinks = False
-        yield app
-    finally:
-        if app is not None:
-            try:
-                app.Quit()
-            except Exception:
-                pass
-        pythoncom.CoUninitialize()

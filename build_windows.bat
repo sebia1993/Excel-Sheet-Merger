@@ -18,7 +18,7 @@ python -m pip install -r requirements-build.txt
 if errorlevel 1 goto FAIL
 python -m unittest discover -s tests -v
 if errorlevel 1 goto FAIL
-pyinstaller --noconfirm --clean --onefile --windowed --name ExcelSheetMerger --paths src --collect-submodules win32com --hidden-import win32timezone --hidden-import pythoncom --hidden-import pywintypes app.py
+pyinstaller --noconfirm --clean --onefile --windowed --name ExcelSheetMerger --paths src --collect-submodules openpyxl app.py
 if errorlevel 1 goto FAIL
 if not exist dist\ExcelSheetMerger.exe goto FAIL
 echo.

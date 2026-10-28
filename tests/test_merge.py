@@ -1,128 +1,156 @@
-"""Excel 프로그램 없이 병합 트랜잭션 동작을 재현하는 테스트."""
-import json
-import sys
+"""실제 CSV bytes를 XLSX로 변환하는 경계 테스트 (Excel COM 모의객체 없음)."""
+
 import tempfile
+import subprocess
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from openpyxl import load_workbook
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from excel_sheet_merger.classify import scan_folder
-from excel_sheet_merger.merge import merge_group, MergeStatus
-
-
-class FakeSheet:
-    def __init__(self, owner, name):
-        self.owner = owner
-        self.Name = name
-
-    def Copy(self, *, After):
-        dest = After.owner
-        dest.sheets.append(FakeSheet(dest, self.Name))
-
-    def Delete(self):
-        self.owner.sheets.remove(self)
-
-
-class FakeSheets:
-    def __init__(self, book):
-        self.book = book
-
-    @property
-    def Count(self):
-        return len(self.book.sheets)
-
-    def __call__(self, idx):
-        return self.book.sheets[idx - 1]
-
-
-class FakeBook:
-    def __init__(self, names=('Sheet1',), fail_save=False):
-        self.sheets = [FakeSheet(self, n) for n in names]
-        self.Sheets = FakeSheets(self)
-        self.closed = False
-        self.fail_save = fail_save
-
-    def SaveAs(self, *, Filename, FileFormat):
-        if self.fail_save:
-            Path(Filename).write_text('partial')
-            raise RuntimeError('시뮬레이션 저장 실패')
-        Path(Filename).write_text(json.dumps([s.Name for s in self.sheets], ensure_ascii=False), encoding='utf-8')
-
-    def Close(self, *, SaveChanges):
-        self.closed = True
-
-
-class FakeBooks:
-    def __init__(self, sheet_count=1, fail_save=False):
-        self.sheet_count = sheet_count
-        self.fail_save = fail_save
-        self.created = []
-        self.opened = []
-
-    def Add(self):
-        b = FakeBook(fail_save=self.fail_save)
-        self.created.append(b)
-        return b
-
-    def Open(self, *, Filename, UpdateLinks, ReadOnly, IgnoreReadOnlyRecommended, AddToMru):
-        assert ReadOnly and UpdateLinks == 0 and not AddToMru
-        b = FakeBook(names=tuple(f'원본{i+1}' for i in range(self.sheet_count)))
-        self.opened.append(b)
-        return b
-
-
-class FakeExcel:
-    def __init__(self, **kwargs):
-        self.Workbooks = FakeBooks(**kwargs)
+from excel_sheet_merger.merge import MergeStatus, merge_group
 
 
 class MergeTests(unittest.TestCase):
     def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tempdir.cleanup)
-        self.folder = Path(self.tempdir.name)
-        self.names = ['A사업장_20261028_14시.xlsx','A사업장_20261028_11시.xlsx','A사업장_20261028_17시.xlsx']
-        for name in self.names:
-            (self.folder / name).write_text('ORIGINAL', encoding='utf-8')
-        self.group = scan_folder(self.folder).groups[0]
-        self.output = self.folder / '병합결과'
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name)
+        self.output = self.folder / "병합결과"
 
-    def test_merges_in_time_order_and_preserves_sources(self):
-        excel = FakeExcel()
-        result = merge_group(self.group, self.output, excel)
+    def csv(self, time: str, contents: str, encoding: str = "utf-8", site: str = "A사업장") -> Path:
+        path = self.folder / f"{site}_20261028_{time}.csv"
+        path.write_bytes(contents.encode(encoding))
+        return path
+
+    def group(self):
+        return scan_folder(self.folder).groups[0]
+
+    def test_cp949_utf8_bom_and_multiline_values_to_three_time_sheets(self):
+        source_11 = self.csv("11시", 'ID,메모,IP,MAC\r\n00123,"내용, 쉼표",10.0.0.1,00:11:22:33:44:55\r\n', "cp949")
+        source_14 = self.csv("14시", 'ID,메모\r\n0001,"첫째 줄\r\n둘째 줄"\r\n', "utf-8-sig")
+        source_17 = self.csv("17시", '식별자,원문\n900,=SUM(A1:A3)\n901,+3\n', "utf-8")
+        original = [p.read_bytes() for p in (source_11, source_14, source_17)]
+        result = merge_group(self.group(), self.output)
         self.assertEqual(result.status, MergeStatus.CREATED)
-        self.assertEqual(json.loads(result.path.read_text(encoding='utf-8')), ['11시','14시','17시'])
-        self.assertTrue(all((self.folder / n).read_text(encoding='utf-8') == 'ORIGINAL' for n in self.names))
-        self.assertEqual(len(excel.Workbooks.opened), 3)
-        self.assertTrue(excel.Workbooks.created[0].closed)
-        self.assertTrue(all(b.closed for b in excel.Workbooks.opened))
-        self.assertEqual(list(self.output.glob('*.xlsx')), [result.path])
+        self.assertEqual(result.path.name, "A사업장_20261028.xlsx")
+        wb = load_workbook(result.path, read_only=False, data_only=False)
+        try:
+            self.assertEqual(wb.sheetnames, ["11시", "14시", "17시"])
+            self.assertEqual([c.value for c in wb["11시"][2]], ["00123", "내용, 쉼표", "10.0.0.1", "00:11:22:33:44:55"])
+            self.assertEqual(wb["14시"]["B2"].value, "첫째 줄\r\n둘째 줄")
+            self.assertEqual(wb["17시"]["B2"].value, "=SUM(A1:A3)")
+            self.assertEqual(wb["17시"]["B2"].data_type, "s")
+            self.assertEqual(wb["17시"]["B3"].value, "+3")
+            self.assertEqual(wb["11시"]["A2"].data_type, "s")
+        finally:
+            wb.close()
+        self.assertEqual([p.read_bytes() for p in (source_11, source_14, source_17)], original)
 
-    def test_existing_result_is_never_overwritten(self):
+    def test_duplicate_hours_produce_distinct_sheet_names(self):
+        self.csv("11시", "값\n하나\n")
+        self.csv("11-00", "값\n둘\n")
+        self.csv("17시", "값\n셋\n")
+        result = merge_group(self.group(), self.output)
+        wb = load_workbook(result.path, read_only=True)
+        try:
+            self.assertEqual(wb.sheetnames, ["11시", "11시 (2)", "17시"])
+            self.assertEqual([wb[s]["A2"].value for s in wb.sheetnames], ["둘", "하나", "셋"])
+        finally:
+            wb.close()
+
+    def test_existing_workbook_is_never_overwritten(self):
+        self.csv("11시", "a\nb\n")
+        self.csv("14시", "a\nc\n")
         self.output.mkdir()
-        dst = self.output / self.group.output_name
-        dst.write_text('DO_NOT_TOUCH', encoding='utf-8')
-        result = merge_group(self.group, self.output, FakeExcel())
+        output = self.output / "A사업장_20261028.xlsx"
+        output.write_bytes(b"EXISTING")
+        result = merge_group(self.group(), self.output)
         self.assertEqual(result.status, MergeStatus.EXISTS)
-        self.assertEqual(dst.read_text(encoding='utf-8'), 'DO_NOT_TOUCH')
+        self.assertEqual(output.read_bytes(), b"EXISTING")
 
-    def test_multiple_sheets_in_one_source_fails_atomically(self):
-        excel = FakeExcel(sheet_count=2)
-        with self.assertRaisesRegex(ValueError, '시트.*1개'):
-            merge_group(self.group, self.output, excel)
-        self.assertFalse((self.output / self.group.output_name).exists())
-        self.assertEqual(list(self.output.glob('*.xlsx')), [])
-        self.assertTrue(excel.Workbooks.created[0].closed)
-        self.assertTrue(all(b.closed for b in excel.Workbooks.opened))
+    def test_unreadable_csv_fails_without_partial_workbook(self):
+        self.csv("11시", "a\nb\n")
+        damaged = self.folder / "A사업장_20261028_14시.csv"
+        damaged.write_bytes(b"\xff\xff\x80\x80\n")
+        with self.assertRaises((UnicodeError, ValueError, RuntimeError)):
+            merge_group(self.group(), self.output)
+        self.assertEqual(list(self.output.glob("*.xlsx")), [])
+        self.assertEqual(list(self.output.glob("_병합중_*")), [])
 
-    def test_save_failure_removes_temporary_files(self):
-        excel = FakeExcel(fail_save=True)
-        with self.assertRaisesRegex(RuntimeError, '저장 실패'):
-            merge_group(self.group, self.output, excel)
-        self.assertEqual(list(self.output.glob('*.xlsx')), [])
-        self.assertFalse((self.output / self.group.output_name).exists())
-        self.assertTrue(excel.Workbooks.created[0].closed)
+    def test_empty_csv_fails_atomically(self):
+        self.csv("11시", "정상\n")
+        self.csv("14시", "")
+        with self.assertRaisesRegex(ValueError, "비어"):
+            merge_group(self.group(), self.output)
+        self.assertEqual(list(self.output.glob("*.xlsx")), [])
+
+    def test_quoted_csv_with_missing_quote_is_rejected(self):
+        self.csv("11시", "a,b\n1,2\n")
+        self.csv("14시", 'a,b\n1,"not closed\n')
+        with self.assertRaises((ValueError, RuntimeError)):
+            merge_group(self.group(), self.output)
+        self.assertEqual(list(self.output.glob("*.xlsx")), [])
+
+    def test_csv_excel_row_limit_is_enforced(self):
+        self.csv("11시", "A\n1\n2\n")
+        self.csv("14시", "A\n3\n")
+        with patch("excel_sheet_merger.merge.MAX_ROWS", 2):
+            with self.assertRaisesRegex(ValueError, "행"):
+                merge_group(self.group(), self.output)
+        self.assertEqual(list(self.output.glob("*.xlsx")), [])
+
+    def test_csv_cell_length_limit_is_enforced_without_truncation(self):
+        self.csv("11시", "a\n" + "가" * 32768 + "\n")
+        self.csv("14시", "a\nb\n")
+        with self.assertRaisesRegex(ValueError, "셀"):
+            merge_group(self.group(), self.output)
+        self.assertEqual(list(self.output.glob("*.xlsx")), [])
+
+    def test_utf16_bom_csv_and_sep_directive(self):
+        self.csv("11시", 'sep=,\r\nID,메모\r\n007,한글\r\n', "utf-16")
+        self.csv("14시", 'ID,메모\r\n009,정상\r\n', "utf-8")
+        result = merge_group(self.group(), self.output)
+        wb = load_workbook(result.path)
+        try:
+            self.assertEqual(wb.sheetnames, ["11시", "14시"])
+            self.assertEqual(wb["11시"]["A1"].value, "ID")
+            self.assertEqual(wb["11시"]["A2"].value, "007")
+            self.assertEqual(wb["11시"]["B2"].value, "한글")
+        finally:
+            wb.close()
+
+    def test_failed_group_closes_streaming_writer_without_gc_errors(self):
+        self.csv("11시", "header\nnormal\n")
+        self.csv("14시", "")
+        project_src = str(Path(__file__).resolve().parents[1] / "src")
+        script = (
+            "import sys,gc; sys.path.insert(0, sys.argv[1]); "
+            "from pathlib import Path; "
+            "from excel_sheet_merger.classify import scan_folder; "
+            "from excel_sheet_merger.merge import merge_group; "
+            "g=scan_folder(Path(sys.argv[2])).groups[0]; "
+            "\ntry: merge_group(g,Path(sys.argv[2])/'병합결과')"
+            "\nexcept ValueError: pass"
+            "\ngc.collect()"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script, project_src, str(self.folder)],
+            capture_output=True, text=True, encoding="utf-8", timeout=20,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("Exception ignored", proc.stderr)
+
+    def test_csv_null_character_rejected_not_stripped(self):
+        self.csv("11시", "a,b\n1,2\n")
+        self.csv("14시", "a,b\n1,\x00\n")
+        with self.assertRaisesRegex(ValueError, "문자"):
+            merge_group(self.group(), self.output)
+        self.assertFalse((self.output / "A사업장_20261028.xlsx").exists())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

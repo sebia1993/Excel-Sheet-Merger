@@ -1,4 +1,4 @@
-"""Windows 11용 한국어 Tkinter GUI — 작업 스레드와 UI 이벤트 분리."""
+"""Windows 11용 한국어 Tkinter CSV → XLSX GUI — 작업 스레드와 UI 이벤트 분리."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .classify import MergeGroup, ScanReport, scan_folder
-from .merge import MergeStatus, excel_session, merge_group
+from .merge import MergeStatus, merge_group
 
 
 def summarize_scan(report: ScanReport) -> str:
@@ -23,12 +23,12 @@ def summarize_scan(report: ScanReport) -> str:
 class MergeApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("엑셀 시트 자동병합  |  Windows 11")
+        self.title("CSV 시트 자동병합  |  Windows 11")
         self.geometry("1050x740")
         self.minsize(840, 620)
         self.configure(bg="#f4f7fb")
         self.folder = tk.StringVar(value="")
-        self.summary = tk.StringVar(value="엑셀 파일이 있는 폴더를 선택해 주세요.")
+        self.summary = tk.StringVar(value="CSV 파일이 있는 폴더를 선택해 주세요.")
         self.state_text = tk.StringVar(value="준비됨")
         self.report: ScanReport | None = None
         self.group_map: dict[str, MergeGroup] = {}
@@ -56,8 +56,8 @@ class MergeApp(tk.Tk):
     def _layout(self) -> None:
         root = ttk.Frame(self, padding=18, style="App.TFrame")
         root.pack(fill="both", expand=True)
-        ttk.Label(root, text="엑셀 시트 자동 병합", style="Head.TLabel").pack(anchor="w")
-        ttk.Label(root, text="사업장·날짜별 자동 분류 → 미리보기 → 시간순 시트 병합 | 원본은 변경하지 않습니다.", style="Hint.TLabel").pack(anchor="w", pady=(1, 12))
+        ttk.Label(root, text="CSV → Excel 자동 병합", style="Head.TLabel").pack(anchor="w")
+        ttk.Label(root, text="CSV 자동 분류 → 시간별 시트가 있는 XLSX 생성 | Excel 설치 불필요 · 원본 보존", style="Hint.TLabel").pack(anchor="w", pady=(1, 12))
 
         controls = ttk.LabelFrame(root, text="1  원본 폴더 선택", padding=10)
         controls.pack(fill="x", pady=(0, 10))
@@ -110,7 +110,7 @@ class MergeApp(tk.Tk):
         self.log = tk.Text(log_box, height=7, wrap="word", font=("Malgun Gothic", 9), background="#fbfdff", foreground="#273449")
         self.log.pack(fill="both")
         self.log.configure(state="disabled")
-        self._write_log("안내: .xlsx 원본 파일은 수정하지 않으며, 동일한 결과 파일이 있으면 건너뜁니다.")
+        self._write_log("안내: 원본 CSV를 변경하지 않고 시간별 시트가 있는 XLSX로 변환합니다. 기존 결과는 건너뜁니다.")
 
     def _set_enabled(self, can_merge: bool) -> None:
         state = "normal" if can_merge and not self.busy else "disabled"
@@ -126,7 +126,7 @@ class MergeApp(tk.Tk):
         self.log.configure(state="disabled")
 
     def _pick_folder(self) -> None:
-        result = filedialog.askdirectory(title="원본 Excel 파일이 있는 폴더 선택", mustexist=True)
+        result = filedialog.askdirectory(title="원본 CSV 파일이 있는 폴더 선택", mustexist=True)
         if result:
             self.folder.set(result)
             self._scan()
@@ -134,7 +134,7 @@ class MergeApp(tk.Tk):
     def _scan(self) -> None:
         location = self.folder.get().strip()
         if not location:
-            messagebox.showinfo("폴더 선택", "먼저 원본 엑셀 폴더를 선택해 주세요.")
+            messagebox.showinfo("폴더 선택", "먼저 원본 CSV 폴더를 선택해 주세요.")
             return
         try:
             report = scan_folder(Path(location))
@@ -200,22 +200,13 @@ class MergeApp(tk.Tk):
             records += [f"단독 보류: {g.inputs[0].file_name}" for g in self.report.singles]
         try:
             output_dir.mkdir(exist_ok=True, parents=True)
-            # 기존 결과만 있는 경우에도 Excel을 켜지 않도록 사전 확인.
-            ready = [g for g in groups if not (output_dir / g.output_name).exists()]
-            if ready:
-                with excel_session() as excel:
-                    for index, group in enumerate(groups, 1):
-                        completed, failed, skipped = self._process_group(excel, group, output_dir, index, len(groups), completed, failed, skipped, records)
-            else:
-                skipped = len(groups)
-                for index, group in enumerate(groups, 1):
-                    item = f"건너뜀 (이미 존재): {group.output_name}"
-                    records.append(item)
-                    self.events.put(("log", item))
-                    self.events.put(("progress", index, len(groups)))
+            for index, group in enumerate(groups, 1):
+                completed, failed, skipped = self._process_group(
+                    group, output_dir, index, len(groups), completed, failed, skipped, records
+                )
         except Exception as exc:
             failed += 1
-            item = f"Excel 실행 실패: {exc}"
+            item = f"병합 작업 실패: {exc}"
             records.append(item)
             self.events.put(("log", item))
         finally:
@@ -228,9 +219,9 @@ class MergeApp(tk.Tk):
                 self.events.put(("log", f"작업 기록 저장 실패: {exc}"))
             self.events.put(("done", completed, failed, skipped))
 
-    def _process_group(self, excel, group, output_dir, index, total, completed, failed, skipped, records):
+    def _process_group(self, group, output_dir, index, total, completed, failed, skipped, records):
         try:
-            outcome = merge_group(group, output_dir, excel)
+            outcome = merge_group(group, output_dir)
             if outcome.status == MergeStatus.CREATED:
                 completed += 1
                 item = f"완료: {group.output_name} / 시트 {len(group.inputs)}개"
