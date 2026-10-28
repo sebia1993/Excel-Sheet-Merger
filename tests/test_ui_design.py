@@ -84,7 +84,7 @@ class GuiBehaviorTests(unittest.TestCase):
         self.assertFalse(self.app.log_expanded)
         self.assertEqual(self.app.log_panel.winfo_manager(), "")
         self.assertTrue(self.app.tree.winfo_exists())
-        self.assertEqual(str(self.app.tree.cget("selectmode")), "extended")
+        self.assertEqual(str(self.app.tree.cget("selectmode")), "browse")
 
     def test_small_window_keeps_tree_and_actions_usable(self):
         # A minimum-sized window must show at least two preview rows below headings.
@@ -94,7 +94,7 @@ class GuiBehaviorTests(unittest.TestCase):
         self.assertTrue(self.app.all_button.winfo_ismapped())
         self.assertTrue(self.app.pick_button.winfo_ismapped())
 
-    def test_scan_updates_metric_cards_and_child_selection(self):
+    def test_scan_updates_metrics_and_tree_highlight_is_not_checkmark(self):
         # Catches styling work accidentally breaking Treeview group selection.
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -107,7 +107,138 @@ class GuiBehaviorTests(unittest.TestCase):
             parent = next(iter(self.app.group_map))
             child = self.app.tree.get_children(parent)[0]
             self.app.tree.selection_set(child)
+            self.assertEqual(self.app._selected_groups(), [])
+            self.assertEqual(str(self.app.selected_button.cget("state")), "disabled")
+            self.app._toggle_group(parent)
             self.assertEqual(self.app._selected_groups(), [self.app.group_map[parent]])
+
+
+    def _scan_three_groups(self, folder):
+        for site in ("A사업장", "B사업장", "C사업장"):
+            for hour in ("11시", "14시"):
+                (folder / f"{site}_20261028_{hour}.csv").write_text(
+                    "ID,IP\n001,192.168.0.1\n", encoding="utf-8"
+                )
+        self.app.folder.set(str(folder))
+        self.app._scan()
+        return list(self.app.group_map)
+
+    def test_checking_multiple_groups_updates_preview_and_button(self):
+        # A checked set, rather than Treeview row highlighting, must control a merge.
+        with tempfile.TemporaryDirectory() as td:
+            ids = self._scan_three_groups(Path(td))
+            self.assertTrue(self.app.tree.item(ids[0], "text").startswith("☐"))
+            self.assertEqual(str(self.app.selected_button.cget("state")), "disabled")
+            self.app._toggle_group(ids[0])
+            self.app._toggle_group(ids[2])
+            self.app.tree.selection_set(ids[1])  # Highlight alone does not check B.
+            self.assertEqual(self.app._selected_groups(), [self.app.group_map[ids[0]], self.app.group_map[ids[2]]])
+            self.assertTrue(self.app.tree.item(ids[0], "text").startswith("☑"))
+            self.assertTrue(self.app.tree.item(ids[2], "text").startswith("☑"))
+            self.assertTrue(self.app.tree.item(ids[1], "text").startswith("☐"))
+            self.assertIn("2 / 전체 3", self.app.selection_summary.get())
+            self.assertEqual(str(self.app.selected_button.cget("state")), "normal")
+            self.app._toggle_group(ids[0])
+            self.app._toggle_group(ids[2])
+            self.assertEqual(self.app._selected_groups(), [])
+            self.assertEqual(str(self.app.selected_button.cget("state")), "disabled")
+
+    def test_select_all_clear_and_rescan_resets_group_checkmarks(self):
+        with tempfile.TemporaryDirectory() as td:
+            ids = self._scan_three_groups(Path(td))
+            self.app._set_all_groups(True)
+            self.assertEqual(len(self.app._selected_groups()), 3)
+            self.assertIn("3 / 전체 3", self.app.selection_summary.get())
+            self.app._set_all_groups(False)
+            self.assertEqual(self.app._selected_groups(), [])
+            self.app._toggle_group(ids[1])
+            self.app._scan()  # Same IDs can be regenerated; old selection must not leak.
+            self.assertEqual(self.app._selected_groups(), [])
+            self.assertEqual(str(self.app.selected_button.cget("state")), "disabled")
+            self.assertTrue(all(self.app.tree.item(k, "text").startswith("☐") for k in self.app.group_map))
+
+    def test_busy_disables_checkbox_actions_and_preserves_in_flight_groups(self):
+        with tempfile.TemporaryDirectory() as td:
+            ids = self._scan_three_groups(Path(td))
+            self.app._toggle_group(ids[0])
+            self.app.busy = True
+            self.app._set_enabled(True)
+            self.app._toggle_group(ids[1])
+            self.app._set_all_groups(True)
+            self.app._scan()
+            self.assertEqual(self.app._selected_groups(), [self.app.group_map[ids[0]]])
+            self.assertEqual(str(self.app.selected_button.cget("state")), "disabled")
+            self.assertEqual(str(self.app.select_all_button.cget("state")), "disabled")
+            self.assertEqual(str(self.app.clear_selection_button.cget("state")), "disabled")
+
+    def test_checked_only_merge_writes_only_two_of_three_workbooks(self):
+        from openpyxl import load_workbook
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td)
+            ids = self._scan_three_groups(directory)
+            self.app._toggle_group(ids[0])
+            self.app._toggle_group(ids[2])
+            with patch("excel_sheet_merger.gui.threading.Thread") as spawn:
+                self.app._start_merge(True)
+            spawn.assert_called_once()
+            selected_groups, output_dir = spawn.call_args.kwargs["args"]
+            self.assertEqual([g.site for g in selected_groups], ["A사업장", "C사업장"])
+            self.app._worker_merge(selected_groups, output_dir)
+            with patch("excel_sheet_merger.gui.messagebox.showinfo"):
+                self.app._consume_events()
+            for site in ("A사업장", "C사업장"):
+                output = directory / "병합결과" / f"{site}_20261028.xlsx"
+                wb = load_workbook(output, read_only=True)
+                try:
+                    self.assertEqual(wb.sheetnames, ["11시", "14시"])
+                    self.assertEqual(wb["11시"]["A2"].value, "001")
+                finally:
+                    wb.close()
+            self.assertFalse((directory / "병합결과" / "B사업장_20261028.xlsx").exists())
+
+    def test_all_merge_ignores_checkbox_filter(self):
+        with tempfile.TemporaryDirectory() as td:
+            ids = self._scan_three_groups(Path(td))
+            self.app._toggle_group(ids[1])
+            with patch("excel_sheet_merger.gui.threading.Thread") as spawn:
+                self.app._start_merge(False)
+            spawn.assert_called_once()
+            selected_groups = spawn.call_args.kwargs["args"][0]
+            self.assertEqual([g.site for g in selected_groups], ["A사업장", "B사업장", "C사업장"])
+
+    def test_mouse_and_keyboard_toggle_group_without_toggling_child(self):
+        with tempfile.TemporaryDirectory() as td:
+            ids = self._scan_three_groups(Path(td))
+            self.app.update()
+            group_box = self.app.tree.bbox(ids[0], column="#0")
+            self.assertTrue(group_box)
+            self.app.tree.event_generate("<ButtonRelease-1>", x=group_box[0] + 55, y=group_box[1] + 10)
+            self.assertEqual([g.site for g in self.app._selected_groups()], ["A사업장"])
+            child = self.app.tree.get_children(ids[0])[0]
+            child_box = self.app.tree.bbox(child, column="#0")
+            self.app.tree.event_generate("<ButtonRelease-1>", x=child_box[0] + 65, y=child_box[1] + 10)
+            self.assertEqual([g.site for g in self.app._selected_groups()], ["A사업장"])
+            self.app.tree.focus(ids[1])
+            self.app.tree.focus_set()
+            self.app.tree.event_generate("<KeyPress-space>")
+            self.assertEqual([g.site for g in self.app._selected_groups()], ["A사업장", "B사업장"])
+            self.app.tree.focus(child)
+            self.app.tree.event_generate("<KeyPress-space>")
+            self.assertEqual([g.site for g in self.app._selected_groups()], ["A사업장", "B사업장"])
+
+    def test_expand_arrow_click_does_not_toggle_group_checkbox(self):
+        # The Treeview expand/collapse arrow is not the checkbox hit target.
+        with tempfile.TemporaryDirectory() as td:
+            ids = self._scan_three_groups(Path(td))
+            self.app.update()
+            x0, y0, width, height = self.app.tree.bbox(ids[0], column="#0")
+            arrow_x = next((x for x in range(x0, x0 + min(width, 60))
+                            if "indicator" in self.app.tree.identify_element(x, y0 + height // 2).lower()), None)
+            if arrow_x is None:
+                self.skipTest("theme does not expose tree expander hit region")
+            self.app.tree.event_generate("<ButtonRelease-1>", x=arrow_x, y=y0 + height // 2)
+            self.assertEqual(self.app._selected_groups(), [])
+            self.assertTrue(self.app.tree.item(ids[0], "text").startswith("☐"))
 
     def test_manual_ui_event_flush_does_not_leave_multiple_poll_timers(self):
         # A manual event drain must replace, not duplicate, the scheduled poll.

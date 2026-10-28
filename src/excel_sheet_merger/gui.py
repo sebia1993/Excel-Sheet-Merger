@@ -1,4 +1,4 @@
-"""Windows 11 Korean CSV/Excel → XLSX GUI; theme-only redesign, unchanged engine."""
+"""Windows 11 Korean CSV/Excel → XLSX GUI with explicit group checkbox selection."""
 
 from __future__ import annotations
 
@@ -40,6 +40,8 @@ class MergeApp(tk.Tk):
         self.metrics = {key: tk.StringVar(value="0") for key in ("checked", "groups", "singles", "rejected")}
         self.report: ScanReport | None = None
         self.group_map: dict[str, MergeGroup] = {}
+        self.checked_group_ids: set[str] = set()
+        self.selection_summary = tk.StringVar(value="선택 0 / 전체 0개 그룹")
         self.events: queue.Queue[tuple] = queue.Queue()
         self.busy = False
         self.log_expanded = False
@@ -126,11 +128,20 @@ class MergeApp(tk.Tk):
         header.pack(fill="x", pady=(0, 6))
         ttk.Label(header, text="02  병합 대상 미리보기", style="Office.Heading.TLabel").pack(side="left")
         ttk.Label(header, textvariable=self.summary, style="Office.Hint.TLabel", wraplength=580).pack(side="right")
+        toolbar = ttk.Frame(card, style="Office.Card.TFrame")
+        toolbar.pack(fill="x", pady=(0, 6))
+        self.select_all_button = ttk.Button(toolbar, text="전체 선택", style="Office.Link.TButton",
+                                            command=lambda: self._set_all_groups(True))
+        self.select_all_button.pack(side="left", padx=(0, 7))
+        self.clear_selection_button = ttk.Button(toolbar, text="선택 해제", style="Office.Link.TButton",
+                                                 command=lambda: self._set_all_groups(False))
+        self.clear_selection_button.pack(side="left")
+        ttk.Label(toolbar, textvariable=self.selection_summary, style="Office.Hint.TLabel").pack(side="right")
         table_container = ttk.Frame(card, style="Office.Card.TFrame")
         table_container.pack(fill="both", expand=True)
         table_container.columnconfigure(0, weight=1)
         table_container.rowconfigure(0, weight=1)
-        self.tree = ttk.Treeview(table_container, style="Office.Treeview", columns=("sheet", "source"), show="tree headings", selectmode="extended")
+        self.tree = ttk.Treeview(table_container, style="Office.Treeview", columns=("sheet", "source"), show="tree headings", selectmode="browse")
         self.tree.heading("#0", text="병합 결과 파일 / 대상")
         self.tree.heading("sheet", text="시트 이름 / 개수")
         self.tree.heading("source", text="원본 CSV·Excel / 제외 사유")
@@ -144,7 +155,10 @@ class MergeApp(tk.Tk):
         scroll = ttk.Scrollbar(table_container, orient="vertical", command=self.tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scroll.set)
-        ttk.Label(card, text="하위 시트를 선택하면 해당 그룹 전체가 병합됩니다.", style="Office.Hint.TLabel").pack(anchor="w", pady=(5, 0))
+        self.tree.bind("<ButtonRelease-1>", self._on_tree_click, add="+")
+        self.tree.bind("<space>", self._on_tree_space, add="+")
+        ttk.Label(card, text="그룹 행의 ☐를 클릭하거나 Space 키로 체크하세요. 하위 시트는 미리보기 전용입니다.",
+                  style="Office.Hint.TLabel").pack(anchor="w", pady=(5, 0))
 
     def _log_card(self, root: ttk.Frame) -> None:
         frame, card = self._card(root, 4)
@@ -194,11 +208,56 @@ class MergeApp(tk.Tk):
             self._toggle_log()
 
     def _set_enabled(self, can_merge: bool) -> None:
-        state = "normal" if can_merge and not self.busy else "disabled"
-        self.all_button.configure(state=state)
-        self.selected_button.configure(state=state)
+        enabled = can_merge and not self.busy
+        self.all_button.configure(state="normal" if enabled else "disabled")
+        self.selected_button.configure(state="normal" if enabled and self.checked_group_ids else "disabled")
+        self.select_all_button.configure(state="normal" if enabled else "disabled")
+        self.clear_selection_button.configure(state="normal" if enabled else "disabled")
         self.scan_button.configure(state="normal" if self.folder.get().strip() and not self.busy else "disabled")
         self.pick_button.configure(state="disabled" if self.busy else "normal")
+
+    def _refresh_check_controls(self) -> None:
+        self.selection_summary.set(f"선택 {len(self.checked_group_ids)} / 전체 {len(self.group_map)}개 그룹")
+        self._set_enabled(bool(self.report and self.report.groups))
+
+    def _toggle_group(self, group_id: str) -> None:
+        """Toggle only a mergeable parent group; focus/row selection is separate."""
+        if self.busy or group_id not in self.group_map:
+            return
+        if group_id in self.checked_group_ids:
+            self.checked_group_ids.remove(group_id)
+        else:
+            self.checked_group_ids.add(group_id)
+        mark = "☑" if group_id in self.checked_group_ids else "☐"
+        self.tree.item(group_id, text=f"{mark}  {self.group_map[group_id].output_name}")
+        self._refresh_check_controls()
+
+    def _set_all_groups(self, checked: bool) -> None:
+        if self.busy:
+            return
+        self.checked_group_ids = set(self.group_map) if checked else set()
+        for group_id, group in self.group_map.items():
+            mark = "☑" if checked else "☐"
+            self.tree.item(group_id, text=f"{mark}  {group.output_name}")
+        self._refresh_check_controls()
+
+    def _on_tree_click(self, event: tk.Event) -> None:
+        """A click in a group's first column checks it; expander stays independent."""
+        if self.busy or self.tree.identify_region(event.x, event.y) != "tree":
+            return
+        group_id = self.tree.identify_row(event.y)
+        if group_id not in self.group_map:
+            return
+        if "indicator" in self.tree.identify_element(event.x, event.y).lower():
+            return
+        self._toggle_group(group_id)
+
+    def _on_tree_space(self, event: tk.Event) -> str:
+        """Toggle the focused group by keyboard without selecting its children."""
+        group_id = self.tree.focus()
+        if group_id in self.group_map:
+            self._toggle_group(group_id)
+        return "break"
 
     def _write_log(self, msg: str) -> None:
         self.log.configure(state="normal")
@@ -213,6 +272,8 @@ class MergeApp(tk.Tk):
             self._scan()
 
     def _scan(self) -> None:
+        if self.busy:
+            return
         location = self.folder.get().strip()
         if not location:
             messagebox.showinfo("폴더 선택", "먼저 원본 CSV·Excel 폴더를 선택해 주세요.")
@@ -223,13 +284,14 @@ class MergeApp(tk.Tk):
             messagebox.showerror("파일 분석 실패", str(exc))
             return
         self.report = report
+        self.checked_group_ids.clear()
         self.group_map.clear()
         for entry in self.tree.get_children():
             self.tree.delete(entry)
         for idx, group in enumerate(report.groups):
             gid = f"g{idx}"
             self.group_map[gid] = group
-            self.tree.insert("", "end", iid=gid, text=group.output_name,
+            self.tree.insert("", "end", iid=gid, text=f"☐  {group.output_name}",
                              values=(f"{len(group.inputs)}개 시트", "병합 가능"), tags=("group",), open=True)
             for j, item in enumerate(group.inputs):
                 self.tree.insert(gid, "end", iid=f"{gid}i{j}", text=item.sheet_name,
@@ -248,19 +310,14 @@ class MergeApp(tk.Tk):
             self.metrics[key].set(value)
         self.summary.set(f"병합 대상 {sum(len(g.inputs) for g in report.groups)}개 파일 · 결과 {len(report.groups)}개")
         self.progress.configure(maximum=1, value=0)
-        self._set_enabled(bool(report.groups))
+        self._refresh_check_controls()
         self.state_text.set("미리보기 준비 완료" if report.groups else "병합할 그룹 없음 · 단독/제외 파일 확인")
         self._write_log(summarize_scan(report))
 
     def _selected_groups(self) -> list[MergeGroup]:
-        selected = set()
-        for item in self.tree.selection():
-            node = item
-            while node and node not in self.group_map:
-                node = self.tree.parent(node)
-            if node in self.group_map:
-                selected.add(node)
-        return [g for gid, g in self.group_map.items() if gid in selected]
+        """Only explicit checkmarks control selected merging, in scan order."""
+        return [group for group_id, group in self.group_map.items()
+                if group_id in self.checked_group_ids]
 
     def _start_merge(self, selection_only: bool) -> None:
         if self.busy or self.report is None:
