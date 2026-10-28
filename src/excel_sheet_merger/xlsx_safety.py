@@ -8,6 +8,7 @@ Normal Excel ZIP members and workbook contents are never rewritten.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from zipfile import ZipFile
 
 MAX_ARCHIVE_MEMBERS = 30_000
@@ -15,6 +16,11 @@ MAX_EXPANDED_PACKAGE_BYTES = 1024 * 1024 * 1024
 MAX_EXPANDED_XML_BYTES = 256 * 1024 * 1024
 SUSPICIOUS_EXPANDED_MEMBER_BYTES = 64 * 1024 * 1024
 MAX_SUSPICIOUS_COMPRESSION_RATIO = 400
+
+# Pinned openpyxl 3.1.5 never reads Office customXml/itemN.xml parts.
+# Keep expanded package and XML size budgets for these parts; only the
+# compression-ratio heuristic for parsed parts is exempt.
+_IGNORED_CUSTOM_XML_ITEM = re.compile(r"customXml/item[1-9][0-9]*\.xml")
 
 
 def validate_xlsx_archive(path: Path) -> None:
@@ -45,5 +51,6 @@ def validate_xlsx_archive(path: Path) -> None:
             if name.endswith(('.xml', '.rels')) and member.file_size > MAX_EXPANDED_XML_BYTES:
                 raise ValueError("Excel 압축 해제 크기가 비정상적으로 큽니다 (XML 용량 한도)")
             if (member.file_size > SUSPICIOUS_EXPANDED_MEMBER_BYTES
-                    and member.file_size > member.compress_size * MAX_SUSPICIOUS_COMPRESSION_RATIO):
+                    and member.file_size > member.compress_size * MAX_SUSPICIOUS_COMPRESSION_RATIO
+                    and _IGNORED_CUSTOM_XML_ITEM.fullmatch(name) is None):
                 raise ValueError("Excel 압축 해제 크기가 비정상적으로 큽니다 (압축 확장 비율)")

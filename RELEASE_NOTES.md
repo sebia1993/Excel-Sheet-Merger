@@ -1,10 +1,10 @@
-# Excel Sheet Merger — 메모 전용 빈 셀의 무손실 복사
+# Excel Sheet Merger — 무관한 고압축 Office XML의 오탐 방지
 
-- 원본 XLSX/XLSM에서 **값과 서식 없이 메모(주석)만 붙은 셀**이 결과 파일에서 누락되던 문제를 수정했습니다. 원본 메모의 텍스트·작성자와 빈 셀 상태를 보존합니다.
-- 기존 데이터·수식·스타일·시트명·그룹 선택·CSV 텍스트·중복 출력 번호 부여·오류 조치 안내·원본 파일은 그대로 유지합니다. 일반 빈 셀은 여전히 생성하지 않습니다.
-- 실제 XLSX 메모 셀과 CSV를 함께 병합하고 반복 실행하여 메모·CSV 문자열 `00123`·기존 결과 보호·새 `(2)` 파일 생성을 회귀 검증합니다.
-- Linux/Xvfb 로컬에서 테스트 157개 실행, 153개 통과 및 Windows 전용 4개 제외를 확인했습니다. Windows Actions 전체 테스트와 EXE 실행 검증 결과는 배포 실행 기록을 참조하세요.
-- GUI 로그 3만 건 유지 시 프로세스 RSS 약 7MiB 증가를 측정했습니다. 전체 기록 조회 기능 변경 없이 자동 삭제·축약하지 않았습니다.
-- 사내 Windows 11·SMB·DRM·백신 환경의 8시간 실사용 테스트는 아직 진행하지 않았습니다.
+- 실제로 읽지 않는 Office `customXml/itemN.xml`의 압축률만 과도하다는 이유로 정상 셀 데이터를 가진 XLSX가 거부되는 문제를 수정했습니다. 기존 `openpyxl 3.1.5`에서는 해당 부가 요소를 병합 결과에 복사하지 않습니다.
+- 실제 ZIP 테스트에서 정상 데이터가 있는 CSV+XLSX 병합을 확인하고, 과도하게 압축된 워크시트 XML, 임의 부가 XML 경로, XML 크기 제한 초과는 여전히 로딩 전에 차단하도록 회귀 검증했습니다.
+- 전체 ZIP 압축 해제 1GiB, 개별 XML 256MiB, ZIP 구성 요소 수 및 중복 검사, 본문 워크시트의 압축률 한도는 변경하지 않았습니다.
+- Linux/Xvfb 로컬 자동 테스트 161개 실행, 157개 통과·Windows 전용 4개 제외. Windows 전체 CI 및 실제 EXE 스모크는 본 Release의 GitHub Actions 결과를 참조하세요.
+- GUI·그룹 체크박스·파일명 번호 부여·CSV 텍스트·Excel 수식/서식·기존 결과 및 원본 보호는 유지했습니다.
+- 회사 Windows 11 PC/SMB/DRM/백신의 8시간 실사용 시험은 아직 수행하지 않았습니다.
 
-[13차 안정성 재감사](https://github.com/sebia1993/Excel-Sheet-Merger/blob/main/docs/superpowers/stability-recheck-2026-10-29-round13.md) · [이전 릴리즈 내용 (v1.3.28)](https://github.com/sebia1993/Excel-Sheet-Merger/blob/main/docs/releases/v1.3.28.md)
+[14차 감사](https://github.com/sebia1993/Excel-Sheet-Merger/blob/main/docs/superpowers/stability-recheck-2026-10-29-round14.md) · [이전 버전 릴리즈 기록 (v1.3.29)](https://github.com/sebia1993/Excel-Sheet-Merger/blob/main/docs/releases/v1.3.29.md)

@@ -58,6 +58,62 @@ class ArchiveResourceSafetyTests(unittest.TestCase):
         self.assertEqual(self.excel_path.read_bytes(), preserved)
         self.assertEqual(list(self.output.iterdir()), [])
 
+    def test_unread_custom_xml_part_with_high_ratio_does_not_block_real_sheet(self):
+        # Office Custom XML auxiliary parts are not read by pinned openpyxl.
+        # This tests a real high-compression ZIP, not just a mocked ZipInfo.
+        document = b'<root>' + b'A' * 160_000 + b'</root>'
+        with zipfile.ZipFile(self.excel_path, 'a') as book:
+            book.writestr('customXml/item1.xml', document, compress_type=zipfile.ZIP_DEFLATED)
+        with zipfile.ZipFile(self.excel_path) as book:
+            member = book.getinfo('customXml/item1.xml')
+            self.assertGreater(member.file_size, 100_000)
+            self.assertGreater(member.file_size, member.compress_size * 400)
+        source_before = self.excel_path.read_bytes()
+        with patch('excel_sheet_merger.xlsx_safety.SUSPICIOUS_EXPANDED_MEMBER_BYTES', 8 * 1024):
+            result = self._merge()
+        self.assertEqual(self.excel_path.read_bytes(), source_before)
+        book = load_workbook(result.path)
+        try:
+            self.assertEqual(book.sheetnames, ['11시', '14시'])
+            self.assertEqual(book['11시']['A2'].value, '00123')
+            self.assertEqual(book['14시']['A1'].value, '정상 데이터')
+            self.assertEqual(book['14시']['B1'].value, '=1+2')
+        finally:
+            book.close()
+
+    def test_high_ratio_actual_worksheet_is_still_blocked_before_parser(self):
+        comments = b'<!--' + b'Q' * 320_000 + b'-->'
+        with zipfile.ZipFile(self.excel_path) as book:
+            original = book.read('xl/worksheets/sheet1.xml')
+        self._replace_member('xl/worksheets/sheet1.xml',
+                             original.replace(b'</worksheet>', comments + b'</worksheet>'))
+        with patch('excel_sheet_merger.xlsx_safety.SUSPICIOUS_EXPANDED_MEMBER_BYTES', 8 * 1024):
+            with patch('excel_sheet_merger.merge.load_workbook', wraps=load_workbook) as parser:
+                with self.assertRaisesRegex(SourceFileError, '압축 확장 비율'):
+                    self._merge()
+                parser.assert_not_called()
+        self.assertEqual(list(self.output.iterdir()), [])
+
+    def test_nonstandard_customxml_path_still_enforces_high_ratio(self):
+        with zipfile.ZipFile(self.excel_path, 'a') as book:
+            book.writestr('customXml/other.xml', b'<root>' + b'B' * 160_000 + b'</root>',
+                          compress_type=zipfile.ZIP_DEFLATED)
+        with patch('excel_sheet_merger.xlsx_safety.SUSPICIOUS_EXPANDED_MEMBER_BYTES', 8 * 1024):
+            with patch('excel_sheet_merger.merge.load_workbook', wraps=load_workbook) as parser:
+                with self.assertRaisesRegex(SourceFileError, '압축 확장 비율'):
+                    self._merge()
+                parser.assert_not_called()
+
+    def test_ignored_customxml_is_still_subject_to_expanded_xml_size_cap(self):
+        with zipfile.ZipFile(self.excel_path, 'a') as book:
+            book.writestr('customXml/item1.xml', b'<root>' + b'C' * 100_000 + b'</root>',
+                          compress_type=zipfile.ZIP_DEFLATED)
+        with patch('excel_sheet_merger.xlsx_safety.MAX_EXPANDED_XML_BYTES', 10 * 1024):
+            with patch('excel_sheet_merger.merge.load_workbook', wraps=load_workbook) as parser:
+                with self.assertRaisesRegex(SourceFileError, 'XML 용량 한도'):
+                    self._merge()
+                parser.assert_not_called()
+
     def test_duplicate_excel_part_cannot_be_loaded_ambiguously(self):
         with zipfile.ZipFile(self.excel_path) as book:
             sheet_xml = book.read('xl/worksheets/sheet1.xml')
