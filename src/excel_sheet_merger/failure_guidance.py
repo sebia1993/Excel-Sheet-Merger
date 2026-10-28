@@ -68,6 +68,11 @@ def diagnose_failure(error: Exception, group: MergeGroup | None = None) -> Failu
                                '인코딩/파일 형식이 맞지 않을 수 있습니다. 이 오류만으로 암호화 여부는 확정할 수 없습니다.',
                                '회사 보안 정책을 준수하여 열람 권한이 있는 프로그램에서 정상 CSV/Excel로 내보내고 다시 시도하거나, 문서보안 담당자에게 문의해 주세요.',
                                technical)
+    if '파일 분석 이후 원본 파일' in technical or '파일 분석 중 원본 파일' in technical:
+        return FailureGuidance(filename, 'SOURCE_CHANGED', '원본 파일이 변경됨',
+                               '파일 분석 이후 원본 파일 내용이 변경되어 이전 분석 결과를 사용할 수 없습니다.',
+                               '원본 파일 저장이 완료된 후 파일 분석을 다시 실행하고 병합해 주세요.',
+                               technical)
     if any_error(csv.Error):
         return FailureGuidance(filename, 'CSV_STRUCTURE', 'CSV 데이터 구조 오류',
                                'CSV의 쉼표·따옴표·행 구성이 올바르지 않거나 데이터가 손상되었습니다.',

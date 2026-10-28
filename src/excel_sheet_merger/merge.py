@@ -22,7 +22,7 @@ from typing import Iterator
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell import WriteOnlyCell
 
-from .classify import MergeGroup, file_snapshot
+from .classify import MergeGroup, file_snapshot, file_fingerprint
 from .temp_workspace import OwnedScratch, cleanup_stale_workspaces
 
 MAX_ROWS = 1_048_576
@@ -245,10 +245,18 @@ def _verify_source(item) -> None:
         return
     try:
         current = file_snapshot(item.path)
+        if current != item.snapshot:
+            raise SourceFileError(item.file_name, ValueError(
+                "파일 분석 이후 원본 파일이 변경되거나 교체되었습니다. 다시 파일 분석을 실행하세요."))
+        fingerprint = getattr(item, 'content_fingerprint', None)
+        if fingerprint is not None:
+            actual = file_fingerprint(item.path, current[0])
+            # Also check metadata again in case of edits during fingerprinting.
+            if actual != fingerprint or file_snapshot(item.path) != item.snapshot:
+                raise SourceFileError(item.file_name, ValueError(
+                    "파일 분석 이후 원본 파일 내용이 변경되었습니다. 다시 파일 분석을 실행하세요."))
     except OSError as exc:
         raise SourceFileError(item.file_name, ValueError(f"원본 파일 확인 실패: {exc}")) from exc
-    if current != item.snapshot:
-        raise SourceFileError(item.file_name, ValueError("파일 분석 이후 원본 파일이 변경되거나 교체되었습니다. 다시 파일 분석을 실행하세요."))
 
 
 def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:

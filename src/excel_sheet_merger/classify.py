@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ class SheetInput:
     minute: int
     sheet_name: str = ""
     snapshot: tuple[int, int, int, int] | None = None
+    content_fingerprint: bytes | None = None
 
     @property
     def file_name(self) -> str:
@@ -177,6 +179,31 @@ def file_snapshot(path: Path) -> tuple[int, int, int, int]:
     return (st.st_size, st.st_mtime_ns, st.st_dev, st.st_ino)
 
 
+_FULL_FINGERPRINT_LIMIT = 8 * 1024 * 1024
+_SAMPLE_SIZE = 64 * 1024
+
+
+def file_fingerprint(path: Path, size: int) -> bytes:
+    """Fingerprint entire small files or 3 bounded regions of a large file.
+
+    This detects accidental edits retaining size/mtime, but sampled hashing
+    is not a cryptographic guarantee for unsampled content above 8 MiB.
+    """
+    digest = hashlib.blake2b(digest_size=20)
+    digest.update(str(size).encode('ascii'))
+    with path.open('rb') as stream:
+        if size <= _FULL_FINGERPRINT_LIMIT:
+            for chunk in iter(lambda: stream.read(128 * 1024), b''):
+                digest.update(chunk)
+        else:
+            offsets = (0, size // 2 - _SAMPLE_SIZE // 2, size - _SAMPLE_SIZE)
+            for offset in offsets:
+                stream.seek(offset)
+                digest.update(offset.to_bytes(8, 'little'))
+                digest.update(stream.read(_SAMPLE_SIZE))
+    return digest.digest()
+
+
 def scan_folder(folder: Path) -> ScanReport:
     folder = Path(folder)
     if not folder.is_dir():
@@ -186,7 +213,18 @@ def scan_folder(folder: Path) -> ScanReport:
     rejected: list[RejectedFile] = []
     for path in candidates:
         try:
-            item = replace(parse_filename(path), snapshot=file_snapshot(path))
+            item = parse_filename(path)
+            before = file_snapshot(path)
+            try:
+                fingerprint = file_fingerprint(path, before[0])
+            except OSError:
+                # An enterprise DLP agent may allow stat(), but block reads.
+                # Preserve the established merge-time error guidance instead of
+                # silently excluding the file during name-based analysis.
+                fingerprint = None
+            if file_snapshot(path) != before:
+                raise ValueError("파일 분석 중 원본 파일이 변경되었습니다")
+            item = replace(item, snapshot=before, content_fingerprint=fingerprint)
         except (ValueError, OSError) as exc:
             rejected.append(RejectedFile(path.name, str(exc)))
             continue

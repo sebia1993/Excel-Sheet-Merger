@@ -59,7 +59,7 @@ jobs:
       - name: Smoke-test the packaged EXE (real CSV and XLSX merge)
         shell: pwsh
         run: |
-          foreach ($iteration in 1..3) {
+          foreach ($iteration in 1..10) {
             $result = Join-Path $env:RUNNER_TEMP "excel-merger-self-test-$iteration.txt"
             $proc = Start-Process -FilePath (Resolve-Path 'dist/ExcelSheetMerger.exe') -ArgumentList @('--self-test', $result) -PassThru
             if (-not $proc.WaitForExit(120000)) {
