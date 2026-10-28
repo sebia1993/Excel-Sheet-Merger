@@ -200,7 +200,10 @@ class ContentFingerprintTests(unittest.TestCase):
         with source.open('r+b') as dest:
             dest.seek(8 * 1024 * 1024)
             dest.write(b'BEGIN-TEST-DATA')
-        expected = file_fingerprint(source, source.stat().st_size)
+        # Windows fixed drives use a complete hash for this 9MiB file;
+        # compare identical 17-window modes rather than full vs sampled.
+        with patch('excel_sheet_merger.classify._is_fixed_local_drive', return_value=False):
+            expected = file_fingerprint(source, source.stat().st_size)
         real_open = Path.open
         read_lengths = []
 
