@@ -218,12 +218,15 @@ class GuiBehaviorTests(unittest.TestCase):
             child_box = self.app.tree.bbox(child, column="#0")
             self.app.tree.event_generate("<ButtonRelease-1>", x=child_box[0] + 65, y=child_box[1] + 10)
             self.assertEqual([g.site for g in self.app._selected_groups()], ["A사업장"])
+            # Hosted Windows CI cannot guarantee that synthetic KeyPress
+            # events reach the foreground window. Exercise the actual bound
+            # callback with a focused tree item rather than OS keyboard focus.
+            self.assertTrue(self.app.tree.bind("<space>"))
             self.app.tree.focus(ids[1])
-            self.app.tree.focus_set()
-            self.app.tree.event_generate("<KeyPress-space>")
+            self.app._on_tree_space(None)
             self.assertEqual([g.site for g in self.app._selected_groups()], ["A사업장", "B사업장"])
             self.app.tree.focus(child)
-            self.app.tree.event_generate("<KeyPress-space>")
+            self.app._on_tree_space(None)
             self.assertEqual([g.site for g in self.app._selected_groups()], ["A사업장", "B사업장"])
 
     def test_expand_arrow_click_does_not_toggle_group_checkbox(self):
