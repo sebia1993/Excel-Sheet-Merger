@@ -78,6 +78,10 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("contents: write", workflow)
         self.assertIn("gh release create", workflow)
         self.assertIn("SHA256SUMS", workflow)
+        # Standalone Windows EXE must include the themed ttkbootstrap assets.
+        self.assertIn("ttkbootstrap==2.2.6", requirements)
+        self.assertIn("--collect-all ttkbootstrap", workflow)
+        self.assertIn("--collect-all ttkbootstrap", bat)
 
     def test_user_documentation_describes_csv_to_xlsx_conversion(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

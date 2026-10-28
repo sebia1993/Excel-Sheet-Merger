@@ -35,10 +35,13 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
+      - name: Verify themed GUI dependency
+        run: python -c "from ttkbootstrap import Style; print('ttkbootstrap OK')"
+
       - name: Build standalone Windows EXE
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --name ExcelSheetMerger --paths src --collect-submodules openpyxl app.py
+          pyinstaller --noconfirm --clean --onefile --windowed --name ExcelSheetMerger --paths src --collect-submodules openpyxl --collect-all ttkbootstrap app.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path 'dist/ExcelSheetMerger.exe')) { throw 'EXE not found' }
           $exe = [System.IO.File]::ReadAllBytes('dist/ExcelSheetMerger.exe')
@@ -62,6 +65,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v1.1.$env:GITHUB_RUN_NUMBER"
+          $tag = "v1.2.$env:GITHUB_RUN_NUMBER"
           gh release create $tag 'dist/ExcelSheetMerger.exe' 'dist/SHA256SUMS.txt' --target $env:GITHUB_SHA --title "Excel Sheet Merger $tag" --notes-file 'RELEASE_NOTES.md' --latest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

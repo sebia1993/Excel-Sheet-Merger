@@ -1,3 +1,5 @@
 # Windows EXE 빌드/개발 환경 전용. EXE 사용자는 설치하지 않아도 됩니다.
 openpyxl>=3.1.5,<4
 pyinstaller>=6.10,<7
+# Minimal Office UI (MIT), pinned for reproducible Windows packaging.
+ttkbootstrap==2.2.6
