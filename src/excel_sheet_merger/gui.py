@@ -230,7 +230,7 @@ class MergeApp(tk.Tk):
         if not self.failure_banner.winfo_manager():
             self.failure_banner.pack(fill="x", padx=5, pady=(2, 3), before=self.log_toggle)
         # Keep the preview useful at the 900x640 minimum window size.
-        self.log.configure(height=2)
+        self.log.configure(height=1)
         self._show_log()
 
     def _failure_dialog_text(self) -> str:

@@ -62,7 +62,7 @@ def configure_theme(root) -> ttk.Style:
     style.configure("Office.Pill.TLabel", background=c["surface_subtle"], foreground=c["primary"], font=(FONT, 9, "bold"), padding=(10, 5))
     style.configure("Office.Status.TLabel", background=c["surface"], foreground=c["text"], font=(FONT, 9))
     style.configure("Office.Failure.TLabel", background=c["surface_subtle"],
-                    foreground=c["error"], font=(FONT, 9), padding=(8, 6))
+                    foreground=c["error"], font=(FONT, 9), padding=(6, 3))
 
     style.configure("Office.Primary.TButton", background=c["primary"], foreground=c["white"], font=(FONT, 10, "bold"), padding=(15, 7), relief="flat", borderwidth=0)
     style.map("Office.Primary.TButton",

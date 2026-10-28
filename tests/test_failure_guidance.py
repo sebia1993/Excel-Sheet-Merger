@@ -19,7 +19,7 @@ class FailureGuidanceTests(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         self.root = Path(self.dir.name)
         self.good_csv = self.root / 'A사업장_20261028_11시.csv'
-        self.good_csv.write_text('ID,설명\n00123,한글\n', encoding='cp949')
+        self.good_csv.write_bytes('ID,설명\n00123,한글\n'.encode('cp949'))
 
     def _group(self):
         return scan_folder(self.root).groups[0]
