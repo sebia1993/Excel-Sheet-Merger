@@ -196,6 +196,25 @@ class GuiBehaviorTests(unittest.TestCase):
                     wb.close()
             self.assertFalse((directory / "병합결과" / "B사업장_20261028.xlsx").exists())
 
+    def test_completion_message_mentions_renamed_workbooks(self):
+        with tempfile.TemporaryDirectory() as td:
+            directory = Path(td)
+            self._scan_three_groups(directory)
+            target = directory / '병합결과'
+            target.mkdir()
+            (target / 'A사업장_20261028.xlsx').write_bytes(b'PREVIOUS')
+            with patch('excel_sheet_merger.gui.threading.Thread'):
+                self.app._start_merge(False)
+            self.app._worker_merge(list(self.app.report.groups), target)
+            with patch('excel_sheet_merger.gui.messagebox.showinfo') as popup:
+                self.app._consume_events()
+            self.assertIn('이름 변경 1개', self.app.state_text.get())
+            self.assertIn('완료 3개', self.app.state_text.get())
+            self.assertNotIn('건너뜀', self.app.state_text.get())
+            self.assertIn('이름 변경 1개', popup.call_args.args[1])
+            self.assertIn('이미 존재', popup.call_args.args[1])
+            self.assertTrue(self.app.log_expanded)
+
     def test_all_merge_ignores_checkbox_filter(self):
         with tempfile.TemporaryDirectory() as td:
             ids = self._scan_three_groups(Path(td))

@@ -71,7 +71,7 @@ class MergeApp(tk.Tk):
         self._log_card(root)
         self._preview_card(root)
         self._set_enabled(False)
-        self._write_log("안내: 원본 CSV·Excel을 변경하지 않고 시간별 시트가 있는 XLSX로 병합합니다. 기존 결과는 건너뜁니다.")
+        self._write_log("안내: 원본 CSV·Excel을 변경하지 않고 시간별 시트가 있는 XLSX로 병합합니다. 기존 결과가 있으면 번호를 붙여 새 파일을 만듭니다.")
 
     def _header(self, root: ttk.Frame) -> None:
         header = ttk.Frame(root, style="Office.Page.TFrame")
@@ -338,7 +338,7 @@ class MergeApp(tk.Tk):
     def _worker_merge(self, groups: list[MergeGroup], output_dir: Path) -> None:
         completed = 0
         failed = 0
-        skipped = 0
+        renamed = 0
         records = [f"병합 실행: {datetime.now():%Y-%m-%d %H:%M:%S}", f"결과 폴더: {output_dir}"]
         if self.report:
             records += [f"제외: {e.name} | {e.reason}" for e in self.report.rejected]
@@ -346,8 +346,8 @@ class MergeApp(tk.Tk):
         try:
             output_dir.mkdir(exist_ok=True, parents=True)
             for index, group in enumerate(groups, 1):
-                completed, failed, skipped = self._process_group(
-                    group, output_dir, index, len(groups), completed, failed, skipped, records
+                completed, failed, renamed = self._process_group(
+                    group, output_dir, index, len(groups), completed, failed, renamed, records
                 )
         except Exception as exc:
             failed += 1
@@ -362,24 +362,28 @@ class MergeApp(tk.Tk):
                 self.events.put(("log", f"기록 파일: {log_file.name}"))
             except Exception as exc:
                 self.events.put(("log", f"작업 기록 저장 실패: {exc}"))
-            self.events.put(("done", completed, failed, skipped))
+            self.events.put(("done", completed, failed, renamed))
 
-    def _process_group(self, group, output_dir, index, total, completed, failed, skipped, records):
+    def _process_group(self, group, output_dir, index, total, completed, failed, renamed, records):
         try:
             outcome = merge_group(group, output_dir)
             if outcome.status == MergeStatus.CREATED:
                 completed += 1
-                item = f"완료: {group.output_name} / 시트 {len(group.inputs)}개"
+                item = f"완료: {outcome.path.name} / 시트 {len(group.inputs)}개"
+            elif outcome.status == MergeStatus.RENAMED:
+                completed += 1
+                renamed += 1
+                item = (f"기존 결과가 이미 존재하여 이름 변경 후 생성: "
+                        f"{group.output_name} → {outcome.path.name} / 시트 {len(group.inputs)}개")
             else:
-                skipped += 1
-                item = f"건너뜀 (이미 존재): {group.output_name}"
+                raise ValueError(f"알 수 없는 병합 결과: {outcome.status}")
         except Exception as exc:
             failed += 1
             item = f"실패: {group.output_name} | {exc}"
         records.append(item)
         self.events.put(("log", item))
         self.events.put(("progress", index, total))
-        return completed, failed, skipped
+        return completed, failed, renamed
 
     def _consume_events(self) -> None:
         # Cancel the previous callback when invoked directly by a test or UI.
@@ -401,15 +405,21 @@ class MergeApp(tk.Tk):
                     self.state_text.set(f"병합 진행 {event[1]}/{event[2]}")
                 elif event[0] == "done":
                     self.busy = False
-                    completed, failed, skipped = event[1:4]
+                    completed, failed, renamed = event[1:4]
                     self._set_enabled(bool(self.report and self.report.groups))
-                    self.state_text.set(f"완료 {completed}개 / 실패 {failed}개 / 건너뜀 {skipped}개")
+                    self.state_text.set(f"완료 {completed}개 / 이름 변경 {renamed}개 / 실패 {failed}개")
                     self._write_log(self.state_text.get())
+                    notice = ""
+                    if renamed:
+                        self._show_log()
+                        notice = (f"\n기존 결과 파일이 {renamed}개 이미 존재하여 "
+                                  "파일명 끝에 번호를 붙여 새로 생성했습니다."
+                                  "\n변경된 파일명은 작업 기록에서 확인할 수 있습니다.")
                     if failed:
                         self._show_log()
-                        messagebox.showwarning("병합 종료", self.state_text.get() + "\n작업 기록을 확인하세요.")
+                        messagebox.showwarning("병합 종료", self.state_text.get() + notice + "\n작업 기록을 확인하세요.")
                     else:
-                        messagebox.showinfo("병합 종료", self.state_text.get() + "\n결과는 '병합결과' 폴더에 저장했습니다.")
+                        messagebox.showinfo("병합 종료", self.state_text.get() + notice + "\n결과는 '병합결과' 폴더에 저장했습니다.")
         except queue.Empty:
             pass
         if self.winfo_exists():

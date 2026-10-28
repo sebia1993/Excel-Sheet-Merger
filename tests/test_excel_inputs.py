@@ -131,8 +131,16 @@ class ExcelInputTests(unittest.TestCase):
         self.out.mkdir()
         path = self.out / 'A사업장_20261028.xlsx'
         path.write_bytes(b'EXISTING')
-        self.assertEqual(self.merge().status, MergeStatus.EXISTS)
+        result = self.merge()
+        self.assertEqual(result.status, MergeStatus.RENAMED)
+        self.assertEqual(result.path.name, 'A사업장_20261028 (2).xlsx')
         self.assertEqual(path.read_bytes(), b'EXISTING')
+        wb = load_workbook(result.path)
+        try:
+            self.assertEqual(wb.sheetnames, ['11시', '14시'])
+            self.assertEqual(wb['14시']['B1'].value, 42.5)
+        finally:
+            wb.close()
 
     def test_legacy_xls_copies_string_number_boolean_and_date(self):
         self.csv('11시', 'ID\n0001\n')

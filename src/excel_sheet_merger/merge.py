@@ -30,7 +30,8 @@ _ILLEGAL_EXCEL_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 class MergeStatus(str, Enum):
     CREATED = "생성 완료"
-    EXISTS = "기존 파일 존재로 건너뜀"
+    EXISTS = "기존 파일 존재로 건너뜀"  # Legacy status: no longer returned for name collisions.
+    RENAMED = "기존 파일 존재로 이름 변경 생성"
 
 
 @dataclass(frozen=True)
@@ -203,8 +204,6 @@ def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     final_path = output_dir / group.output_name
-    if final_path.exists():
-        return MergeResult(final_path, MergeStatus.EXISTS)
     tmp_path = output_dir / f"_병합중_{uuid.uuid4().hex}.xlsx"
     # CSV-only keeps the original memory-efficient streaming writer.
     csv_only = all(item.path.suffix.casefold() == '.csv' for item in group.inputs)
@@ -224,19 +223,23 @@ def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
             else:
                 raise ValueError(f"지원하지 않는 Excel 형식입니다: {item.file_name}")
         wb.save(tmp_path)
-        # Windows에서는 os.rename이 기존 파일을 덮어쓰지 않음.
-        # POSIX에서는 atomic link를 사용해 no-clobber 동작을 보장.
-        if os.name == "nt":
+        # Avoid TOCTOU: the final filename is claimed by an exclusive operation,
+        # not by a prior exists() check. Another process may publish first.
+        # Windows rename refuses an existing destination; POSIX link does too.
+        candidate = final_path
+        suffix = 2
+        while True:
             try:
-                os.rename(tmp_path, final_path)
+                if os.name == "nt":
+                    os.rename(tmp_path, candidate)
+                else:
+                    os.link(tmp_path, candidate)
             except FileExistsError:
-                return MergeResult(final_path, MergeStatus.EXISTS)
-        else:
-            try:
-                os.link(tmp_path, final_path)
-            except FileExistsError:
-                return MergeResult(final_path, MergeStatus.EXISTS)
-        return MergeResult(final_path, MergeStatus.CREATED)
+                candidate = final_path.with_name(f"{final_path.stem} ({suffix}){final_path.suffix}")
+                suffix += 1
+            else:
+                status = MergeStatus.CREATED if candidate == final_path else MergeStatus.RENAMED
+                return MergeResult(candidate, status)
     except Exception:
         # write_only 워크시트의 열린 XML 제너레이터를 닫지 않으면,
         # 실패 후 GC 단계에서 lxml 예외가 stderr에 출력된다.

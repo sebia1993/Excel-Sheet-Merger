@@ -62,15 +62,82 @@ class MergeTests(unittest.TestCase):
         finally:
             wb.close()
 
-    def test_existing_workbook_is_never_overwritten(self):
+    def test_existing_workbook_gets_suffix_and_is_never_overwritten(self):
         self.csv("11시", "a\nb\n")
         self.csv("14시", "a\nc\n")
         self.output.mkdir()
         output = self.output / "A사업장_20261028.xlsx"
         output.write_bytes(b"EXISTING")
         result = merge_group(self.group(), self.output)
-        self.assertEqual(result.status, MergeStatus.EXISTS)
+        self.assertEqual(result.status, MergeStatus.RENAMED)
+        self.assertEqual(result.path.name, "A사업장_20261028 (2).xlsx")
         self.assertEqual(output.read_bytes(), b"EXISTING")
+        wb = load_workbook(result.path, read_only=True)
+        try:
+            self.assertEqual(wb.sheetnames, ["11시", "14시"])
+            self.assertEqual(wb["14시"]["A2"].value, "c")
+        finally:
+            wb.close()
+
+    def test_repeated_merges_create_successive_numbered_files(self):
+        self.csv("11시", "ID\n00123\n")
+        self.csv("14시", "ID\n00456\n")
+        group = self.group()
+        first = merge_group(group, self.output)
+        original = first.path.read_bytes()
+        second = merge_group(group, self.output)
+        third = merge_group(group, self.output)
+        self.assertEqual([p.path.name for p in (first, second, third)], [
+            "A사업장_20261028.xlsx",
+            "A사업장_20261028 (2).xlsx",
+            "A사업장_20261028 (3).xlsx",
+        ])
+        self.assertEqual([p.status for p in (first, second, third)], [
+            MergeStatus.CREATED, MergeStatus.RENAMED, MergeStatus.RENAMED,
+        ])
+        self.assertEqual(first.path.read_bytes(), original)
+        for created in (second, third):
+            w = load_workbook(created.path, read_only=True)
+            try:
+                self.assertEqual(w.sheetnames, ["11시", "14시"])
+                self.assertEqual(w["11시"]["A2"].value, "00123")
+            finally:
+                w.close()
+
+    def test_atomic_publish_retries_after_another_writer_claims_the_name(self):
+        self.csv("11시", "a\nb\n")
+        self.csv("14시", "a\nc\n")
+        from excel_sheet_merger.merge import os as merge_os
+        publisher = merge_os.rename if merge_os.name == "nt" else merge_os.link
+        function_name = "rename" if merge_os.name == "nt" else "link"
+        output = self.output / "A사업장_20261028.xlsx"
+        called = []
+
+        def racing_writer(temp, destination):
+            called.append(Path(destination).name)
+            if Path(destination) == output:
+                output.write_bytes(b"ANOTHER-WRITER")
+                raise FileExistsError(17, "already exists", str(output))
+            return publisher(temp, destination)
+
+        with patch("excel_sheet_merger.merge.os." + function_name, side_effect=racing_writer):
+            result = merge_group(self.group(), self.output)
+        self.assertEqual(result.path.name, "A사업장_20261028 (2).xlsx")
+        self.assertEqual(result.status, MergeStatus.RENAMED)
+        self.assertEqual(called, ["A사업장_20261028.xlsx", "A사업장_20261028 (2).xlsx"])
+        self.assertEqual(output.read_bytes(), b"ANOTHER-WRITER")
+        self.assertTrue(result.path.is_file())
+
+    def test_bad_source_does_not_write_suffix_when_existing_result_present(self):
+        self.csv("11시", "a\nb\n")
+        self.csv("14시", "")
+        self.output.mkdir()
+        existing = self.output / "A사업장_20261028.xlsx"
+        existing.write_bytes(b"PREVIOUS")
+        with self.assertRaisesRegex(ValueError, "비어"):
+            merge_group(self.group(), self.output)
+        self.assertEqual(existing.read_bytes(), b"PREVIOUS")
+        self.assertEqual(sorted(p.name for p in self.output.iterdir()), ["A사업장_20261028.xlsx"])
 
     def test_unreadable_csv_fails_without_partial_workbook(self):
         self.csv("11시", "a\nb\n")

@@ -41,6 +41,51 @@ class DistributionTests(unittest.TestCase):
             finally:
                 wb.close()
 
+    def test_existing_output_creates_renamed_file_with_visible_gui_notice(self):
+        from excel_sheet_merger.gui import MergeApp
+        from excel_sheet_merger.classify import scan_folder
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for hour in ('11시', '14시'):
+                (root / f'A사업장_20261028_{hour}.csv').write_text('ID\n001\n', encoding='utf-8')
+            target = root / '병합결과'
+            target.mkdir()
+            previous = target / 'A사업장_20261028.xlsx'
+            previous.write_bytes(b'KEEP-EXISTING')
+            app = MergeApp.__new__(MergeApp)
+            app.events = queue.Queue()
+            records = []
+            totals = app._process_group(scan_folder(root).groups[0], target, 1, 1, 0, 0, 0, records)
+            self.assertEqual(totals, (1, 0, 1))
+            self.assertEqual(previous.read_bytes(), b'KEEP-EXISTING')
+            self.assertTrue((target / 'A사업장_20261028 (2).xlsx').exists())
+            self.assertIn('이미 존재', records[0])
+            self.assertIn('A사업장_20261028.xlsx', records[0])
+            self.assertIn('A사업장_20261028 (2).xlsx', records[0])
+            self.assertIn('A사업장_20261028 (2).xlsx', str(list(app.events.queue)))
+
+    def test_worker_completion_reports_renamed_count_instead_of_skipped(self):
+        from excel_sheet_merger.gui import MergeApp
+        from excel_sheet_merger.classify import scan_folder
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for hour in ('11시', '14시'):
+                (root / f'A사업장_20261028_{hour}.csv').write_text('x\n1\n', encoding='utf-8')
+            target = root / '병합결과'
+            target.mkdir()
+            (target / 'A사업장_20261028.xlsx').write_bytes(b'PREVIOUS')
+            app = MergeApp.__new__(MergeApp)
+            app.events = queue.Queue()
+            report = scan_folder(root)
+            app.report = report
+            app._worker_merge(list(report.groups), target)
+            results = [event for event in app.events.queue if event[0] == 'done']
+            self.assertEqual(results, [('done', 1, 0, 1)])
+            self.assertTrue((target / 'A사업장_20261028 (2).xlsx').exists())
+            files = list(target.glob('병합작업기록_*.txt'))
+            self.assertEqual(len(files), 1)
+            self.assertIn('A사업장_20261028 (2).xlsx', files[0].read_text(encoding='utf-8-sig'))
+
     def test_worker_continues_after_corrupt_group(self):
         from excel_sheet_merger.gui import MergeApp
         from excel_sheet_merger.classify import scan_folder
