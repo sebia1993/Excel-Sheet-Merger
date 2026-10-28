@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 from .classify import MergeGroup, ScanReport, scan_folder
 from .failure_guidance import FailureGuidance, diagnose_failure
 from .merge import MergeStatus, merge_group
+from .temp_workspace import OwnedScratch
 from .ui_theme import COLORS, FONT, configure_theme
 
 
@@ -40,10 +41,12 @@ class MergeApp(tk.Tk):
         self.state_text = tk.StringVar(value="원본 CSV·Excel 파일이 있는 폴더를 선택하세요.")
         self.metrics = {key: tk.StringVar(value="0") for key in ("checked", "groups", "singles", "rejected")}
         self.report: ScanReport | None = None
+        self._scanned_folder: Path | None = None
         self.group_map: dict[str, MergeGroup] = {}
         self.checked_group_ids: set[str] = set()
         self.selection_summary = tk.StringVar(value="선택 0 / 전체 0개 그룹")
         self.events: queue.Queue[tuple] = queue.Queue()
+        self._record_error: str | None = None
         self.busy = False
         self.log_expanded = False
         self.failure_messages: list[FailureGuidance] = []
@@ -307,9 +310,25 @@ class MergeApp(tk.Tk):
             self.folder.set(result)
             self._scan()
 
+    def _invalidate_scan(self) -> None:
+        """Make an old preview unusable before a new (possibly failing) scan."""
+        self.report = None
+        self._scanned_folder = None
+        self.group_map.clear()
+        self.checked_group_ids.clear()
+        for entry in self.tree.get_children():
+            self.tree.delete(entry)
+        for value in self.metrics.values():
+            value.set("0")
+        self.summary.set("폴더 분석이 필요합니다.")
+        self.progress.configure(maximum=1, value=0)
+        self._reset_failures()
+        self._refresh_check_controls()
+
     def _scan(self) -> None:
         if self.busy:
             return
+        self._invalidate_scan()
         location = self.folder.get().strip()
         if not location:
             messagebox.showinfo("폴더 선택", "먼저 원본 CSV·Excel 폴더를 선택해 주세요.")
@@ -320,6 +339,7 @@ class MergeApp(tk.Tk):
             messagebox.showerror("파일 분석 실패", str(exc))
             return
         self.report = report
+        self._scanned_folder = Path(location).resolve()
         self._reset_failures()
         self.checked_group_ids.clear()
         self.group_map.clear()
@@ -359,12 +379,17 @@ class MergeApp(tk.Tk):
     def _start_merge(self, selection_only: bool) -> None:
         if self.busy or self.report is None:
             return
+        if self._scanned_folder is None or Path(self.folder.get()).resolve() != self._scanned_folder:
+            self._invalidate_scan()
+            messagebox.showerror("파일 분석 필요", "선택한 폴더가 변경되었습니다. 다시 파일 분석을 실행하세요.")
+            return
         groups = self._selected_groups() if selection_only else list(self.report.groups)
         if not groups:
             messagebox.showinfo("병합 선택", "병합할 그룹을 선택해 주세요." if selection_only else "병합 대상 그룹이 없습니다.")
             return
-        output_dir = Path(self.folder.get()) / "병합결과"
+        output_dir = self._scanned_folder / "병합결과"
         self._reset_failures()
+        self._record_error = None
         self.busy = True
         self._set_enabled(False)
         self.progress.configure(maximum=len(groups), value=0)
@@ -372,6 +397,23 @@ class MergeApp(tk.Tk):
         self._write_log(f"병합 시작: {len(groups)}개 그룹 → {output_dir}")
         thread = threading.Thread(target=self._worker_merge, args=(groups, output_dir), daemon=True)
         thread.start()
+
+    @staticmethod
+    def _write_job_record(output_dir: Path, records: list[str]) -> Path:
+        """Publish a complete log atomically; never leave a partial named TXT."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log_file = output_dir / f"병합작업기록_{datetime.now():%Y%m%d_%H%M%S_%f}.txt"
+        with OwnedScratch(output_dir) as scratch:
+            staged = scratch.path / 'log.tmp'
+            with staged.open('x', encoding='utf-8-sig') as file:
+                file.write("\n".join(records) + "\n")
+                file.flush()
+                os.fsync(file.fileno())
+            if os.name == 'nt':
+                os.rename(staged, log_file)
+            else:
+                os.link(staged, log_file)
+        return log_file
 
     def _worker_merge(self, groups: list[MergeGroup], output_dir: Path) -> None:
         completed = 0
@@ -397,11 +439,10 @@ class MergeApp(tk.Tk):
             self.events.put(("log", item))
         finally:
             try:
-                output_dir.mkdir(exist_ok=True, parents=True)
-                log_file = output_dir / f"병합작업기록_{datetime.now():%Y%m%d_%H%M%S_%f}.txt"
-                log_file.write_text("\n".join(records) + "\n", encoding="utf-8-sig")
+                log_file = self._write_job_record(output_dir, records)
                 self.events.put(("log", f"기록 파일: {log_file.name}"))
             except Exception as exc:
+                self.events.put(("record_error", str(exc)))
                 self.events.put(("log", f"작업 기록 저장 실패: {exc}"))
             self.events.put(("done", completed, failed, renamed))
 
@@ -440,13 +481,17 @@ class MergeApp(tk.Tk):
             except tk.TclError:
                 pass
             self._poll_job = None
+        processed = 0
         try:
-            while True:
+            while processed < 100:
                 event = self.events.get_nowait()
+                processed += 1
                 if event[0] == "log":
                     self._write_log(event[1])
                 elif event[0] == "failure":
                     self._register_failure(event[1])
+                elif event[0] == "record_error":
+                    self._record_error = event[1]
                 elif event[0] == "progress":
                     self.progress.configure(maximum=event[2], value=event[1])
                     self.state_text.set(f"병합 진행 {event[1]}/{event[2]}")
@@ -462,16 +507,20 @@ class MergeApp(tk.Tk):
                         notice = (f"\n기존 결과 파일이 {renamed}개 이미 존재하여 "
                                   "파일명 끝에 번호를 붙여 새로 생성했습니다."
                                   "\n변경된 파일명은 작업 기록에서 확인할 수 있습니다.")
-                    if failed:
+                    if failed or self._record_error:
                         self._show_log()
-                        messagebox.showwarning("병합 실패 원인 안내", self.state_text.get() + notice
-                                               + self._failure_dialog_text())
+                        details = self._failure_dialog_text() if failed else ""
+                        if self._record_error:
+                            details += ("\n작업 기록 저장 실패: " + self._record_error
+                                        + "\nXLSX 생성 결과와 별개로 기록 저장 상태를 확인하세요.")
+                        messagebox.showwarning("병합 실패 원인 안내", self.state_text.get() + notice + details)
                     else:
                         messagebox.showinfo("병합 종료", self.state_text.get() + notice + "\n결과는 '병합결과' 폴더에 저장했습니다.")
         except queue.Empty:
             pass
         if self.winfo_exists():
-            self._poll_job = self.after(120, self._consume_events)
+            # Yield control after a bounded batch; keep FIFO order intact.
+            self._poll_job = self.after(1 if not self.events.empty() else 120, self._consume_events)
 
     def _open_results(self) -> None:
         if not self.folder.get():

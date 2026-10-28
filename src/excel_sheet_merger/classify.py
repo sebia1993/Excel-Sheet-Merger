@@ -27,6 +27,7 @@ class SheetInput:
     hour: int
     minute: int
     sheet_name: str = ""
+    snapshot: tuple[int, int, int, int] | None = None
 
     @property
     def file_name(self) -> str:
@@ -170,6 +171,12 @@ def parse_filename(path: Path) -> SheetInput:
     return SheetInput(path=path, site=site, date=date, hour=hour, minute=minute, sheet_name=sheet_name)
 
 
+def file_snapshot(path: Path) -> tuple[int, int, int, int]:
+    """Capture size, modification time and file identity for consistency checks."""
+    st = path.stat()
+    return (st.st_size, st.st_mtime_ns, st.st_dev, st.st_ino)
+
+
 def scan_folder(folder: Path) -> ScanReport:
     folder = Path(folder)
     if not folder.is_dir():
@@ -179,8 +186,8 @@ def scan_folder(folder: Path) -> ScanReport:
     rejected: list[RejectedFile] = []
     for path in candidates:
         try:
-            item = parse_filename(path)
-        except ValueError as exc:
+            item = replace(parse_filename(path), snapshot=file_snapshot(path))
+        except (ValueError, OSError) as exc:
             rejected.append(RejectedFile(path.name, str(exc)))
             continue
         key = (item.site.casefold(), item.date)

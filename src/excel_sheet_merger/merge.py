@@ -11,6 +11,8 @@ from copy import copy
 import csv
 import os
 import re
+import shutil
+import zipfile
 import uuid
 from dataclasses import dataclass
 from enum import Enum
@@ -20,7 +22,8 @@ from typing import Iterator
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell import WriteOnlyCell
 
-from .classify import MergeGroup
+from .classify import MergeGroup, file_snapshot
+from .temp_workspace import OwnedScratch, cleanup_stale_workspaces
 
 MAX_ROWS = 1_048_576
 MAX_COLUMNS = 16_384
@@ -129,27 +132,29 @@ def _append_openpyxl(ws, path: Path) -> None:
         if source.max_row > MAX_ROWS or source.max_column > MAX_COLUMNS:
             raise ValueError(f"Excel 행/열 한도를 초과했습니다: {path.name}")
         has_data = False
-        for row in source.iter_rows():
-            for cell in row:
-                if cell.value is None and not cell.has_style:
-                    continue
-                if cell.value is not None:
-                    has_data = True
-                target = ws.cell(row=cell.row, column=cell.column, value=cell.value)
-                # '=' as text stays text; real formulas remain formulas.
-                if cell.data_type == 's' and isinstance(cell.value, str):
-                    target.data_type = 's'
-                if cell.has_style:
-                    target.font = copy(cell.font)
-                    target.fill = copy(cell.fill)
-                    target.border = copy(cell.border)
-                    target.alignment = copy(cell.alignment)
-                    target.number_format = cell.number_format
-                    target.protection = copy(cell.protection)
-                if cell.hyperlink is not None:
-                    target.hyperlink = copy(cell.hyperlink)
-                if cell.comment is not None:
-                    target.comment = copy(cell.comment)
+        # iter_rows() materializes every empty cell inside the rectangular bounds,
+        # even when a 5KB source has only two populated/style cells 700 rows apart.
+        # The source workbook loaded in normal mode already has instantiated cells.
+        # Keep the previous rule for empty unstyled cells, styles and merged borders.
+        for cell in source._cells.values():  # pinned openpyxl 3.1.x internal API
+            if cell.value is None and not cell.has_style:
+                continue
+            if cell.value is not None:
+                has_data = True
+            target = ws.cell(row=cell.row, column=cell.column, value=cell.value)
+            if cell.data_type == 's' and isinstance(cell.value, str):
+                target.data_type = 's'
+            if cell.has_style:
+                target.font = copy(cell.font)
+                target.fill = copy(cell.fill)
+                target.border = copy(cell.border)
+                target.alignment = copy(cell.alignment)
+                target.number_format = cell.number_format
+                target.protection = copy(cell.protection)
+            if cell.hyperlink is not None:
+                target.hyperlink = copy(cell.hyperlink)
+            if cell.comment is not None:
+                target.comment = copy(cell.comment)
         if not has_data:
             raise ValueError(f"비어 있는 Excel 시트입니다: {path.name}")
         for key, dim in source.column_dimensions.items():
@@ -208,67 +213,117 @@ def _append_xls(ws, path: Path) -> None:
         book.release_resources()
 
 
+def _stitch_csv_sheets(base_path: Path, csv_path: Path,
+                       replacements: dict[int, int], destination: Path) -> None:
+    """Copy ZIP entries in bounded chunks; CSV sheets use separate streamed XML.
+
+    A CSV worksheet has no relationships/styles beyond inline strings. Excel
+    sheets and the rest of the workbook package remain from the normal book.
+    """
+    with zipfile.ZipFile(base_path) as base, zipfile.ZipFile(csv_path) as csv_package, \
+            zipfile.ZipFile(destination, 'w') as combined:
+        present = set(base.namelist())
+        required = {f'xl/worksheets/sheet{i}.xml' for i in replacements}
+        if not required <= present:
+            raise ValueError('임시 Excel 시트 구조를 확인할 수 없습니다')
+        for member in base.infolist():
+            # Every target sheet path is from the normal workbook, with
+            # corresponding streamed XML from the CSV-only writer.
+            name = member.filename
+            prefix = 'xl/worksheets/sheet'
+            number = name[len(prefix):-4] if name.startswith(prefix) and name.endswith('.xml') else ''
+            csv_index = replacements.get(int(number)) if number.isdigit() else None
+            source = csv_package if csv_index is not None else base
+            source_path = f'xl/worksheets/sheet{csv_index}.xml' if csv_index is not None else member.filename
+            with source.open(source_path, 'r') as stream_in, combined.open(member, 'w') as stream_out:
+                shutil.copyfileobj(stream_in, stream_out, length=1024 * 1024)
+
+
+def _verify_source(item) -> None:
+    """Fail closed if the selected file changed after analysis or during read."""
+    if item.snapshot is None:
+        return
+    try:
+        current = file_snapshot(item.path)
+    except OSError as exc:
+        raise SourceFileError(item.file_name, ValueError(f"원본 파일 확인 실패: {exc}")) from exc
+    if current != item.snapshot:
+        raise SourceFileError(item.file_name, ValueError("파일 분석 이후 원본 파일이 변경되거나 교체되었습니다. 다시 파일 분석을 실행하세요."))
+
+
 def merge_group(group: MergeGroup, output_dir: Path) -> MergeResult:
-    """그룹당 한 번만 생성; 읽기 실패 시 최종 파일을 만들지 않는다."""
+    """Publish complete XLSX atomically, after source and style validation."""
     if len(group.inputs) < 2:
         raise ValueError("병합 대상 파일이 2개 미만입니다")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    final_path = output_dir / group.output_name
-    tmp_path = output_dir / f"_병합중_{uuid.uuid4().hex}.xlsx"
-    # CSV-only keeps the original memory-efficient streaming writer.
-    csv_only = all(item.path.suffix.casefold() == '.csv' for item in group.inputs)
-    wb = Workbook(write_only=csv_only)
-    if not csv_only:
-        wb.remove(wb.active)  # no default "Sheet" in the output
-    try:
-        for item in group.inputs:
-            try:
-                ws = wb.create_sheet(title=item.sheet_name)
-                extension = item.path.suffix.casefold()
-                if extension == '.csv':
-                    _append_csv(ws, item.path)
-                elif extension in ('.xlsx', '.xlsm'):
-                    _append_openpyxl(ws, item.path)
-                elif extension == '.xls':
-                    _append_xls(ws, item.path)
-                else:
-                    raise ValueError(f"지원하지 않는 Excel 형식입니다: {item.file_name}")
-            except Exception as exc:
-                raise SourceFileError(item.file_name, exc) from exc
-        wb.save(tmp_path)
-        # Avoid TOCTOU: the final filename is claimed by an exclusive operation,
-        # not by a prior exists() check. Another process may publish first.
-        # Windows rename refuses an existing destination; POSIX link does too.
-        candidate = final_path
-        suffix = 2
-        while True:
-            try:
-                if os.name == "nt":
-                    os.rename(tmp_path, candidate)
-                else:
-                    os.link(tmp_path, candidate)
-            except FileExistsError:
-                candidate = final_path.with_name(f"{final_path.stem} ({suffix}){final_path.suffix}")
-                suffix += 1
+    cleanup_stale_workspaces(output_dir)
+    with OwnedScratch(output_dir) as scratch:
+        result_path = scratch.path / 'result.xlsx'
+        csv_only = all(item.path.suffix.casefold() == '.csv' for item in group.inputs)
+        wb = Workbook(write_only=csv_only)
+        streamed_csv = Workbook(write_only=True) if not csv_only else None
+        replacements: dict[int, int] = {}
+        if not csv_only:
+            wb.remove(wb.active)
+        try:
+            for sheet_index, item in enumerate(group.inputs, start=1):
+                try:
+                    _verify_source(item)
+                    ws = wb.create_sheet(title=item.sheet_name)
+                    extension = item.path.suffix.casefold()
+                    if extension == '.csv':
+                        if streamed_csv is not None:
+                            ws_csv = streamed_csv.create_sheet(title=item.sheet_name)
+                            _append_csv(ws_csv, item.path)
+                            replacements[sheet_index] = len(replacements) + 1
+                        else:
+                            _append_csv(ws, item.path)
+                    elif extension in ('.xlsx', '.xlsm'):
+                        _append_openpyxl(ws, item.path)
+                    elif extension == '.xls':
+                        _append_xls(ws, item.path)
+                    else:
+                        raise ValueError(f"지원하지 않는 Excel 형식입니다: {item.file_name}")
+                    _verify_source(item)
+                except Exception as exc:
+                    raise SourceFileError(item.file_name, exc) from exc
+            if replacements:
+                base = scratch.path / 'base.xlsx'
+                csv_part = scratch.path / 'csv.xlsx'
+                wb.save(base)
+                streamed_csv.save(csv_part)
+                _stitch_csv_sheets(base, csv_part, replacements, result_path)
             else:
-                status = MergeStatus.CREATED if candidate == final_path else MergeStatus.RENAMED
-                return MergeResult(candidate, status)
-    except Exception:
-        # write_only 워크시트의 열린 XML 제너레이터를 닫지 않으면,
-        # 실패 후 GC 단계에서 lxml 예외가 stderr에 출력된다.
-        if csv_only:
-            for ws in wb.worksheets:
-                if not ws.closed:
-                    try:
-                        ws.close()
-                    except Exception:
-                        pass
-        raise
-    finally:
-        wb.close()
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
+                wb.save(result_path)
+            # Revalidate the source versions immediately before publishing.
+            for item in group.inputs:
+                _verify_source(item)
+            final_path = output_dir / group.output_name
+            candidate = final_path
+            suffix = 2
+            while True:
+                try:
+                    if os.name == 'nt':
+                        os.rename(result_path, candidate)
+                    else:
+                        os.link(result_path, candidate)
+                except FileExistsError:
+                    candidate = final_path.with_name(f'{final_path.stem} ({suffix}){final_path.suffix}')
+                    suffix += 1
+                else:
+                    status = MergeStatus.CREATED if candidate == final_path else MergeStatus.RENAMED
+                    return MergeResult(candidate, status)
+        except Exception:
+            for book in (wb, streamed_csv):
+                if book is None:
+                    continue
+                for sheet in book.worksheets:
+                    if hasattr(sheet, 'closed') and not sheet.closed:
+                        try:
+                            sheet.close()
+                        except Exception:
+                            pass
+            raise
+        finally:
+            wb.close()
