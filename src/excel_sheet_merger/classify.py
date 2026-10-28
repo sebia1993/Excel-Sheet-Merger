@@ -8,6 +8,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
+from .network_io import is_network_io_error
+
 DATE_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?:[-._]?\d{2}){2}(?!\d)")
 TIME_PATTERNS = (
     re.compile(r"(?:오전|오후)?\s*(?:[01]?\d|2[0-3])시(?:[0-5]?\d분)?"),
@@ -221,15 +223,19 @@ def scan_folder(folder: Path) -> ScanReport:
             before = file_snapshot(path)
             try:
                 fingerprint = file_fingerprint(path, before[0])
-            except OSError:
-                # An enterprise DLP agent may allow stat(), but block reads.
-                # Preserve the established merge-time error guidance instead of
-                # silently excluding the file during name-based analysis.
+            except OSError as exc:
+                # Explicit network outages invalidate the entire scan. Do not
+                # merge a partial or unverified directory listing after a
+                # disconnected SMB share. Keep normal DLP read-only behavior.
+                if is_network_io_error(exc):
+                    raise
                 fingerprint = None
             if file_snapshot(path) != before:
                 raise ValueError("파일 분석 중 원본 파일이 변경되었습니다")
             item = replace(item, snapshot=before, content_fingerprint=fingerprint)
         except (ValueError, OSError) as exc:
+            if is_network_io_error(exc):
+                raise
             rejected.append(RejectedFile(path.name, str(exc)))
             continue
         key = (item.site.casefold(), item.date)

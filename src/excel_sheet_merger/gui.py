@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 from .classify import MergeGroup, ScanReport, scan_folder
 from .failure_guidance import FailureGuidance, diagnose_failure
 from .merge import MergeStatus, merge_group
+from .network_io import is_network_io_error
 from .temp_workspace import OwnedScratch
 from .ui_theme import COLORS, FONT, configure_theme
 
@@ -344,7 +345,13 @@ class MergeApp(tk.Tk):
         try:
             report = scan_folder(Path(location))
         except Exception as exc:
-            messagebox.showerror("파일 분석 실패", str(exc))
+            if is_network_io_error(exc):
+                advice = diagnose_failure(exc)
+                description = (f"원본 폴더: {location}\n{advice.reason}\n"
+                               f"{advice.action}\n\n기술 오류: {advice.technical}")
+            else:
+                description = str(exc)
+            messagebox.showerror("파일 분석 실패", description)
             return
         self.report = report
         self._scanned_folder = Path(location).resolve()

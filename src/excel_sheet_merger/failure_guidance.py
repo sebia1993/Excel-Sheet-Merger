@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .merge import SourceFileError
+from .network_io import is_network_io_error
 
 if TYPE_CHECKING:
     from .classify import MergeGroup
@@ -59,6 +60,14 @@ def diagnose_failure(error: Exception, group: MergeGroup | None = None) -> Failu
                                '결과 저장 드라이브의 여유 공간이 부족하거나 디스크 할당량을 초과했습니다.',
                                '병합결과 폴더가 있는 드라이브의 저장 공간 및 회사 공유폴더 할당량을 확인하고, '
                                '필요시 관리자에게 문의한 뒤 재시도해 주세요.', technical)
+    if any(is_network_io_error(cause) for cause in chain):
+        return FailureGuidance(filename, 'NETWORK_IO', '공유폴더/네트워크 연결 오류',
+                               '원본을 읽거나 결과를 저장하는 동안 네트워크 또는 공유폴더 연결이 중단되었을 수 있습니다. '
+                               '이 오류만으로 원본 파일이 손상되었다고 판단할 수는 없습니다.',
+                               '회사 네트워크·VPN·공유폴더 연결 상태를 확인하세요. '
+                               '서버 응답이 끊기기 직전에 결과 파일이 이미 생성되었을 가능성도 있으므로 '
+                               '병합결과 폴더에 생성된 파일이 있는지 먼저 확인하고, '
+                               '원본 폴더를 다시 분석한 다음 재시도해 주세요.', technical)
     if any_error(FileNotFoundError):
         return FailureGuidance(filename, 'MISSING_INPUT', '원본 파일을 찾을 수 없음',
                                '파일 분석 이후 원본 파일이 이동·삭제되었거나 접근할 수 없습니다.',
