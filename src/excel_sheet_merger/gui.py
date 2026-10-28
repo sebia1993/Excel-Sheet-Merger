@@ -54,6 +54,7 @@ class MergeApp(tk.Tk):
         self.failure_text = tk.StringVar(value="")
         self._style()
         self._layout()
+        self.bind("<Configure>", self._fit_failure_spacing, add="+")
         self.protocol("WM_DELETE_WINDOW", self._close)
         self._poll_job = self.after(120, self._consume_events)
 
@@ -64,12 +65,16 @@ class MergeApp(tk.Tk):
         """Bordered content surface, independent of platform-specific corner APIs."""
         frame = tk.Frame(parent, bg=COLORS["border"], padx=1, pady=1)
         body = ttk.Frame(frame, padding=padding, style="Office.Card.TFrame")
+        self._card_spacing.append((body, padding))
         body.pack(fill="both", expand=True)
         return frame, body
 
     def _layout(self) -> None:
         # The footer and log reserve their space; the preview expands into the rest.
+        self._card_spacing: list[tuple[ttk.Frame, int]] = []
+        self._compact_failure = False
         root = ttk.Frame(self, padding=(20, 12, 20, 12), style="Office.Page.TFrame")
+        self._content_frame = root
         root.pack(fill="both", expand=True)
         self._header(root)
         self._folder_card(root)
@@ -223,6 +228,7 @@ class MergeApp(tk.Tk):
         self.failure_text.set("")
         self.failure_banner.pack_forget()
         self.log.configure(height=4)
+        self._fit_failure_spacing()
 
     def _register_failure(self, advice: FailureGuidance) -> None:
         """Called only from the UI thread when a worker queues a failure."""
@@ -236,6 +242,25 @@ class MergeApp(tk.Tk):
         # Keep the preview useful at the 900x640 minimum window size.
         self.log.configure(height=1)
         self._show_log()
+        self._fit_failure_spacing()
+
+    def _fit_failure_spacing(self, event=None) -> None:
+        """Keep the existing preview usable in small windows with error advice.
+
+        Only whitespace changes: retain every error/log line, control and font.
+        Normal spacing is restored as soon as the notice clears or space returns.
+        Ignore child Configure events and avoid a geometry feedback loop.
+        """
+        if event is not None and event.widget is not self:
+            return
+        compact = bool(self.failure_messages) and self.winfo_height() < 700
+        if compact == self._compact_failure:
+            return
+        self._compact_failure = compact
+        vertical = 5 if compact else 12
+        self._content_frame.configure(padding=(20, vertical, 20, vertical))
+        for body, padding in self._card_spacing:
+            body.configure(padding=min(padding, 3) if compact else padding)
 
     def _failure_dialog_text(self) -> str:
         if not self.failure_messages:
