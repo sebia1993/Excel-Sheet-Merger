@@ -16,6 +16,11 @@ on:
 permissions:
   contents: write
 
+# Do not allow an older in-flight build to publish a later "latest" release.
+concurrency:
+  group: excel-sheet-merger-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   package:
     runs-on: windows-2025
@@ -89,6 +94,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Even a manual re-run of an obsolete SHA must not become latest.
+          $currentMain = (gh api "repos/$env:GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha').Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($currentMain -ne $env:GITHUB_SHA) {
+            Write-Host "Skip stale release: build $env:GITHUB_SHA, current main $currentMain"
+            exit 0
+          }
           $tag = "v1.3.$env:GITHUB_RUN_NUMBER"
           gh release create $tag 'dist/ExcelSheetMerger.exe' 'dist/SHA256SUMS.txt' 'dist/BUILD_DEPENDENCIES.txt' --target $env:GITHUB_SHA --title "Excel Sheet Merger $tag" --notes-file 'RELEASE_NOTES.md' --latest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

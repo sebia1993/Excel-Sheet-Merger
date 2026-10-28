@@ -56,3 +56,11 @@
 - [x] Verify tests and syntax, inspect diff and unchanged merge engine SHA.
 - [x] Capture remaining risk items and postpone long-run corporate Windows verification as the final Codex stage.
 - [ ] Push exact tested code, confirm Windows CI 100% and EXE release assets; if blocked, report precisely without inventing success.
+
+### Task 5: Release sequencing guard
+**Files:** `.github/workflows/windows-exe.yml`, `RELEASE_NOTES.md`, audit notes.
+
+- [x] Identify two out-of-order Actions runs publishing `--latest` without comparing the run SHA to current `main`.
+- [x] Add ref-level concurrency (`cancel-in-progress`) and a fail-safe current-main SHA test before release creation.
+- [x] Validate workflow YAML structure locally and verify normal unit tests are unchanged.
+- [ ] Confirm Windows Actions passes and a new Release points to the exact published commit.
