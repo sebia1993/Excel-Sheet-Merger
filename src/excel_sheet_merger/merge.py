@@ -25,6 +25,7 @@ from openpyxl.cell import WriteOnlyCell
 
 from .classify import MergeGroup, file_snapshot, file_fingerprint
 from .temp_workspace import OwnedScratch, cleanup_stale_workspaces
+from .xlsx_safety import validate_xlsx_archive
 
 MAX_ROWS = 1_048_576
 MAX_COLUMNS = 16_384
@@ -123,6 +124,7 @@ def _append_csv(ws, path: Path) -> None:
 def _append_openpyxl(ws, path: Path) -> None:
     """Copy the sole worksheet's ordinary cells and layout without executing Excel."""
     try:
+        validate_xlsx_archive(path)
         source_wb = load_workbook(path, read_only=False, data_only=False, keep_links=False)
     except Exception as exc:
         raise ValueError(f"Excel 파일을 열 수 없습니다 ({path.name}): {exc}") from exc

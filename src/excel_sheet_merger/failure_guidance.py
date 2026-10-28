@@ -112,6 +112,14 @@ def diagnose_failure(error: Exception, group: MergeGroup | None = None) -> Failu
         return FailureGuidance(filename, 'EXCEL_LIMIT', 'Excel 데이터 크기 제한',
                                '행·열 또는 셀의 글자 수가 Excel 허용 범위를 초과했습니다.',
                                '회사 정책을 준수하며 원본 데이터를 여러 파일로 나누어 병합해 주세요.', technical)
+    if ('압축 해제 크기가 비정상' in technical or
+            '비정상적으로 많은 구성 요소' in technical or
+            '중복된 구성 요소' in technical):
+        return FailureGuidance(filename, 'EXCEL_RESOURCE_LIMIT', 'Excel 압축 구성 안전성 검사 실패',
+                               'Excel 내부 압축 데이터가 비정상적으로 크거나 구성 요소가 중복되어 '
+                               '프로그램 안정성을 위해 읽기를 중단했습니다. 이 오류만으로 악성 파일이나 암호화를 확정할 수는 없습니다.',
+                               '회사에서 허용한 Excel 프로그램으로 원본을 확인하고, 정상적인 파일을 별도로 저장한 후 '
+                               '다시 분석해 주세요. 필요한 경우 문서보안 담당자에게 문의하세요.', technical)
     if 'excel 파일을 열 수 없' in message or 'xls 파일을 열 수 없' in message:
         return FailureGuidance(filename, 'EXCEL_OPEN', 'Excel 파일을 읽을 수 없음',
                                'Excel 파일 형식이 올바르지 않거나 손상·암호 보호·회사 문서보안 적용 가능성이 있습니다. 원인은 아직 확정되지 않았습니다.',
